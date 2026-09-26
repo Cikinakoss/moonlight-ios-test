@@ -383,7 +383,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1510;
+				LastUpgradeCheck = 2700;
 				ORGANIZATIONNAME = "Moonlight Stream";
 				TargetAttributes = {
 					FB1A67EE21324EE300507771 = {
@@ -523,7 +523,7 @@
 				SDKROOT = appletvos;
 				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = 3;
-				TVOS_DEPLOYMENT_TARGET = 15.0;
+				TVOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_TVOS_DEPLOYMENT_TARGET)";
 				VALIDATE_PRODUCT = NO;
 			};
 			name = Debug;
@@ -554,7 +554,7 @@
 				SDKROOT = appletvos;
 				SKIP_INSTALL = YES;
 				TARGETED_DEVICE_FAMILY = 3;
-				TVOS_DEPLOYMENT_TARGET = 15.0;
+				TVOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_TVOS_DEPLOYMENT_TARGET)";
 				VALIDATE_PRODUCT = NO;
 			};
 			name = Release;
@@ -620,6 +620,7 @@
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 			};
 			name = Debug;
 		};
@@ -680,6 +681,7 @@
 				PROVISIONING_PROFILE = "";
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 			};
 			name = Release;
 		};
@@ -693,7 +695,7 @@
 					"moonlight-common-c/nanors",
 					"moonlight-common-c/nanors/deps/obl",
 				);
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET)";
 				MACOSX_DEPLOYMENT_TARGET = "$(RECOMMENDED_MACOSX_DEPLOYMENT_TARGET)";
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -712,7 +714,7 @@
 					"moonlight-common-c/nanors",
 					"moonlight-common-c/nanors/deps/obl",
 				);
-				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				IPHONEOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET)";
 				MACOSX_DEPLOYMENT_TARGET = "$(RECOMMENDED_MACOSX_DEPLOYMENT_TARGET)";
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_NAME = "$(TARGET_NAME)";
