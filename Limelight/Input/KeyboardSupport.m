@@ -202,6 +202,7 @@
                 break;
             case UIKeyboardHIDUsageKeypadEnter:
                 keyCode = 0x0D;
+                modifierFlags |= MODIFIER_EXTENDED;
                 break;
             case UIKeyboardHIDUsageKeypadPeriod:
                 keyCode = 0x6E;
