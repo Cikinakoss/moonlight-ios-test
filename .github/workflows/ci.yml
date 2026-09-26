@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.platform }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scheme: Moonlight
+            sdk: iphonesimulator
+            platform: iOS
+          - scheme: Moonlight TV
+            sdk: appletvsimulator
+            platform: tvOS
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Download ${{ matrix.platform }} platform
+        run: xcodebuild -downloadPlatform ${{ matrix.platform }}
+
+      - name: Build Debug
+        run: xcodebuild -project Moonlight.xcodeproj -scheme "${{ matrix.scheme }}" -configuration Debug -sdk ${{ matrix.sdk }} clean build
+
+      - name: Build Release
+        run: xcodebuild -project Moonlight.xcodeproj -scheme "${{ matrix.scheme }}" -configuration Release -sdk ${{ matrix.sdk }} clean build
