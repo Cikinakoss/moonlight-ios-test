@@ -18,6 +18,7 @@
     NSInteger _bitrate;
     NSInteger _lastSelectedResolutionIndex;
     UISegmentedControl* _asyncVideoSubmissionSelector;
+    UISegmentedControl* _immediatePresentationSelector;
 }
 
 @dynamic overrideUserInterfaceStyle;
@@ -279,6 +280,20 @@ BOOL isCustomResolution(CGSize res) {
         _asyncVideoSubmissionSelector.enabled = NO;
     }
     [self.scrollView addSubview:_asyncVideoSubmissionSelector];
+
+    UILabel* immediateLabel = [[UILabel alloc] initWithFrame:CGRectMake(referenceFrame.origin.x,
+        CGRectGetMaxY(_asyncVideoSubmissionSelector.frame) + 12, referenceFrame.size.width, 24)];
+    immediateLabel.text = @"Immediate Latest-Frame Presentation (Experimental)";
+    immediateLabel.textColor = UIColor.whiteColor;
+    immediateLabel.font = [UIFont systemFontOfSize:17];
+    immediateLabel.adjustsFontSizeToFitWidth = YES;
+    [self.scrollView addSubview:immediateLabel];
+    _immediatePresentationSelector = [[UISegmentedControl alloc] initWithItems:@[@"Off", @"On"]];
+    _immediatePresentationSelector.frame = CGRectMake(referenceFrame.origin.x,
+        CGRectGetMaxY(immediateLabel.frame) + 5, referenceFrame.size.width, referenceFrame.size.height);
+    _immediatePresentationSelector.selectedSegmentIndex =
+        [[NSUserDefaults standardUserDefaults] boolForKey:MLImmediatePresentationDefaultsKey] ? 1 : 0;
+    [self.scrollView addSubview:_immediatePresentationSelector];
 }
 
 - (void) touchModeChanged {
@@ -541,6 +556,8 @@ BOOL isCustomResolution(CGSize res) {
 - (void) saveSettings {
     [[NSUserDefaults standardUserDefaults] setBool:_asyncVideoSubmissionSelector.selectedSegmentIndex == 1
                                           forKey:MLAsyncVideoSubmissionDefaultsKey];
+    [[NSUserDefaults standardUserDefaults] setBool:_immediatePresentationSelector.selectedSegmentIndex == 1
+                                          forKey:MLImmediatePresentationDefaultsKey];
     DataManager* dataMan = [[DataManager alloc] init];
     NSInteger framerate = [self getChosenFrameRate];
     NSInteger height = [self getChosenStreamHeight];

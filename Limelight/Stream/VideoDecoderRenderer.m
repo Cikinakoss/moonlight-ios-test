@@ -22,6 +22,7 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
                               int write_seq_header);
 
 NSString* const MLAsyncVideoSubmissionDefaultsKey = @"ExperimentalAsyncVideoSubmission";
+NSString* const MLImmediatePresentationDefaultsKey = @"ExperimentalImmediatePresentation";
 
 // The connection's existing compressed-frame submission function.
 int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
@@ -45,6 +46,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
 
     // The mode is fixed for the renderer's lifetime. Only one path consumes frames.
     BOOL _asyncSubmission;
+    BOOL _immediatePresentation;
     AVSampleBufferVideoRenderer* _sampleBufferRenderer;
     dispatch_queue_t _videoSubmitQueue;
     dispatch_group_t _videoSubmitGroup;
@@ -53,6 +55,8 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     atomic_uint _submittedFrames;
     atomic_uint _enqueuedFrames;
     atomic_uint _backpressureDrops;
+    atomic_uint _immediateEnqueues;
+    atomic_int _rendererReady; // -1 = unknown; otherwise last pre-enqueue readiness.
     NSUInteger _displayCallbacks;
     CFTimeInterval _lastStatisticsTime;
     NSString* _submissionStatistics;
@@ -109,6 +113,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     _callbacks = callbacks;
     _streamAspectRatio = aspectRatio;
     framePacing = useFramePacing;
+    _immediatePresentation = [[NSUserDefaults standardUserDefaults] boolForKey:MLImmediatePresentationDefaultsKey];
 
     // Unlike CALayer mutations, this iOS 17+ API explicitly supports background enqueueing.
     if (@available(iOS 17.0, tvOS 17.0, *)) {
@@ -119,6 +124,8 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     atomic_init(&_submittedFrames, 0);
     atomic_init(&_enqueuedFrames, 0);
     atomic_init(&_backpressureDrops, 0);
+    atomic_init(&_immediateEnqueues, 0);
+    atomic_init(&_rendererReady, -1);
     _videoSubmitGroup = dispatch_group_create();
     _videoSubmitQueue = dispatch_queue_create("com.moonlight.video-submit",
         dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
@@ -147,9 +154,11 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         atomic_store(&self->_submittedFrames, 0);
         atomic_store(&self->_enqueuedFrames, 0);
         atomic_store(&self->_backpressureDrops, 0);
+        atomic_store(&self->_immediateEnqueues, 0);
+        atomic_store(&self->_rendererReady, -1);
         @synchronized (self) {
-            self->_submissionStatistics = [NSString stringWithFormat:@"Requested: %d FPS; submission: %@",
-                self->frameRate, self->_asyncSubmission ? @"Async" : @"Display link"];
+            self->_submissionStatistics = [NSString stringWithFormat:@"Requested: %d FPS; submission: %@; immediate: %@",
+                self->frameRate, self->_asyncSubmission ? @"Async" : @"Display link", self->_immediatePresentation ? @"ON" : @"OFF"];
         }
         self->_displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayLinkCallback:)];
         if (@available(iOS 15.0, tvOS 15.0, *)) {
@@ -160,7 +169,8 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         }
         [self->_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
     }];
-    Log(LOG_I, @"Stream FPS configured: %d; async video submission: %@", frameRate, _asyncSubmission ? @"ON" : @"OFF");
+    Log(LOG_I, @"Stream FPS configured: %d; async video submission: %@; immediate presentation: %@",
+        frameRate, _asyncSubmission ? @"ON" : @"OFF", _immediatePresentation ? @"ON" : @"OFF");
 
     if (_asyncSubmission) {
         dispatch_group_async(_videoSubmitGroup, _videoSubmitQueue, ^{
@@ -218,14 +228,19 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     double submitted = atomic_exchange(&_submittedFrames, 0) / interval;
     double enqueued = atomic_exchange(&_enqueuedFrames, 0) / interval;
     unsigned int backpressure = atomic_exchange(&_backpressureDrops, 0);
+    double immediateEnqueues = atomic_exchange(&_immediateEnqueues, 0) / interval;
+    int ready = atomic_load(&_rendererReady);
+    NSString* readiness = ready < 0 ? @"Unknown" : (ready ? @"Ready" : @"Not ready");
     double callbacks = _displayCallbacks / interval;
     @synchronized (self) {
         _submissionStatistics = [NSString stringWithFormat:
-            @"Requested: %d FPS; submission: %@\nSubmitted/enqueued: %.1f/%.1f FPS; display callbacks: %.1f/s\nRenderer backpressure drops: %u",
-            frameRate, _asyncSubmission ? @"Async" : @"Display link", submitted, enqueued, callbacks, backpressure];
+            @"Requested: %d FPS; submission: %@; immediate: %@\nSubmitted/enqueued: %.1f/%.1f FPS; display callbacks: %.1f/s\nRenderer backpressure drops: %u; readiness (last check): %@\nImmediate-tagged enqueues: %.1f/s",
+            frameRate, _asyncSubmission ? @"Async" : @"Display link", _immediatePresentation ? @"ON" : @"OFF",
+            submitted, enqueued, callbacks, backpressure, readiness, immediateEnqueues];
     }
-    Log(LOG_I, @"Video submission (%@): requested=%d FPS, submitted=%.1f/s, enqueued=%.1f/s, display callbacks=%.1f/s, backpressure drops=%u",
-        _asyncSubmission ? @"Async" : @"Display link", frameRate, submitted, enqueued, callbacks, backpressure);
+    Log(LOG_I, @"Video submission (%@): requested=%d FPS, immediate=%@, submitted=%.1f/s, enqueued=%.1f/s, immediate-tagged=%.1f/s, display callbacks=%.1f/s, backpressure drops=%u, readiness (last check)=%@",
+        _asyncSubmission ? @"Async" : @"Display link", frameRate, _immediatePresentation ? @"ON" : @"OFF",
+        submitted, enqueued, immediateEnqueues, callbacks, backpressure, readiness);
     _displayCallbacks = 0;
     _lastStatisticsTime = now;
 }
@@ -669,6 +684,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         renderingError = displayLayer.error;
     }
     if (renderingStatus == AVQueuedSampleBufferRenderingStatusFailed) {
+        atomic_store(&_rendererReady, -1);
         Log(LOG_E, @"Display layer rendering failed: %@", renderingError);
         
         // Layer-tree and view changes stay on the main thread. The sole submitter
@@ -682,7 +698,9 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
 
     if (_asyncSubmission) {
         if (@available(iOS 17.0, tvOS 17.0, *)) {
-            if (!_sampleBufferRenderer.readyForMoreMediaData) {
+            BOOL ready = _sampleBufferRenderer.readyForMoreMediaData;
+            atomic_store(&_rendererReady, ready);
+            if (!ready) {
                 // Never build an unbounded AVFoundation queue. Dropping compressed
                 // reference frames needs the core's existing IDR recovery path.
                 atomic_fetch_add(&_backpressureDrops, 1);
@@ -690,6 +708,9 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
                 return DR_NEED_IDR;
             }
         }
+    }
+    else {
+        atomic_store(&_rendererReady, displayLayer.readyForMoreMediaData);
     }
     
     // Now we're decoding actual frame data here
@@ -758,6 +779,21 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         return DR_NEED_IDR;
     }
 
+    if (_immediatePresentation) {
+        // Keep PTS and compressed decode ordering intact. This sample-level key
+        // asks AVFoundation to supersede older images instead of waiting for PTS.
+        CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
+        if (attachments == NULL || CFArrayGetCount(attachments) != 1) {
+            Log(LOG_E, @"Unable to create immediate presentation sample attachment");
+            CFRelease(dataBlockBuffer);
+            CFRelease(frameBlockBuffer);
+            CFRelease(sampleBuffer);
+            return DR_NEED_IDR;
+        }
+        CFMutableDictionaryRef sampleAttachments = (CFMutableDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+        CFDictionarySetValue(sampleAttachments, kCMSampleAttachmentKey_DisplayImmediately, kCFBooleanTrue);
+    }
+
     // Enqueue the next frame
     if (_asyncSubmission) {
         if (@available(iOS 17.0, tvOS 17.0, *)) {
@@ -768,6 +804,10 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         [displayLayer enqueueSampleBuffer:sampleBuffer];
     }
     atomic_fetch_add(&_enqueuedFrames, 1);
+    if (_immediatePresentation) {
+        // This counts tagged enqueues, not decoded or physically displayed frames.
+        atomic_fetch_add(&_immediateEnqueues, 1);
+    }
     
     if (du->frameType == FRAME_TYPE_IDR) {
         // Ensure the layer is visible now

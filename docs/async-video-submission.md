@@ -1,5 +1,9 @@
 # Async video submission experiment
 
+This describes the async experiment with Immediate Presentation Off. The later,
+independent [immediate presentation experiment](immediate-presentation.md) adds
+a default-Off sample attachment and additional diagnostics.
+
 In Settings, scroll below Statistics Overlay to **Async Video Submission
 (Experimental)**. It defaults to Off and requires iOS/iPadOS 17 or newer. The
 preference is stored locally in NSUserDefaults and is sampled when a renderer is

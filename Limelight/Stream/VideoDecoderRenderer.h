@@ -13,6 +13,7 @@
 #include "Limelight.h"
 
 FOUNDATION_EXPORT NSString* const MLAsyncVideoSubmissionDefaultsKey;
+FOUNDATION_EXPORT NSString* const MLImmediatePresentationDefaultsKey;
 
 @interface VideoDecoderRenderer : NSObject
 
