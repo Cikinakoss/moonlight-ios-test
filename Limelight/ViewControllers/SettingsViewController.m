@@ -19,6 +19,7 @@
     NSInteger _lastSelectedResolutionIndex;
     UISegmentedControl* _asyncVideoSubmissionSelector;
     UISegmentedControl* _immediatePresentationSelector;
+    UISegmentedControl* _latestDecodedFrameSelector;
 }
 
 @dynamic overrideUserInterfaceStyle;
@@ -294,6 +295,28 @@ BOOL isCustomResolution(CGSize res) {
     _immediatePresentationSelector.selectedSegmentIndex =
         [[NSUserDefaults standardUserDefaults] boolForKey:MLImmediatePresentationDefaultsKey] ? 1 : 0;
     [self.scrollView addSubview:_immediatePresentationSelector];
+
+    UILabel* latestLabel = [[UILabel alloc] initWithFrame:CGRectMake(referenceFrame.origin.x,
+        CGRectGetMaxY(_immediatePresentationSelector.frame) + 12, referenceFrame.size.width, 24)];
+    latestLabel.text = @"Latest Decoded Frame (Experimental)";
+    latestLabel.textColor = UIColor.whiteColor;
+    latestLabel.font = [UIFont systemFontOfSize:17];
+    latestLabel.adjustsFontSizeToFitWidth = YES;
+    [self.scrollView addSubview:latestLabel];
+    _latestDecodedFrameSelector = [[UISegmentedControl alloc] initWithItems:@[@"Off", @"On"]];
+    _latestDecodedFrameSelector.frame = CGRectMake(referenceFrame.origin.x,
+        CGRectGetMaxY(latestLabel.frame) + 5, referenceFrame.size.width, referenceFrame.size.height);
+    _latestDecodedFrameSelector.selectedSegmentIndex =
+        [[NSUserDefaults standardUserDefaults] boolForKey:MLLatestDecodedFrameDefaultsKey] ? 1 : 0;
+    if (@available(iOS 17.0, tvOS 17.0, *)) {
+        // The mode requires public hardware-decoder selection available on 17+.
+    }
+    else {
+        latestLabel.text = @"Latest Decoded Frame (requires iOS 17)";
+        _latestDecodedFrameSelector.enabled = NO;
+        _latestDecodedFrameSelector.selectedSegmentIndex = 0;
+    }
+    [self.scrollView addSubview:_latestDecodedFrameSelector];
 }
 
 - (void) touchModeChanged {
@@ -558,6 +581,8 @@ BOOL isCustomResolution(CGSize res) {
                                           forKey:MLAsyncVideoSubmissionDefaultsKey];
     [[NSUserDefaults standardUserDefaults] setBool:_immediatePresentationSelector.selectedSegmentIndex == 1
                                           forKey:MLImmediatePresentationDefaultsKey];
+    [[NSUserDefaults standardUserDefaults] setBool:_latestDecodedFrameSelector.selectedSegmentIndex == 1
+                                          forKey:MLLatestDecodedFrameDefaultsKey];
     DataManager* dataMan = [[DataManager alloc] init];
     NSInteger framerate = [self getChosenFrameRate];
     NSInteger height = [self getChosenStreamHeight];

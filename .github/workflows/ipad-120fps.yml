@@ -46,6 +46,17 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build
 
+      - name: Test latest-frame mailbox and ownership
+        run: |
+          xcrun --sdk macosx clang \
+            -fobjc-arc -fblocks -std=gnu11 -fsanitize=address -g \
+            -I moonlight-common/moonlight-common-c/src \
+            -framework Foundation -framework AVFoundation -framework VideoToolbox \
+            -framework CoreMedia -framework CoreVideo -framework QuartzCore \
+            Tests/latest-frame-decoder-tests.m \
+            -o "$RUNNER_TEMP/latest-frame-tests"
+          "$RUNNER_TEMP/latest-frame-tests"
+
       - name: Package unsigned IPA
         run: |
           app="$RUNNER_TEMP/MoonlightBuild/Build/Products/Release-iphoneos/Moonlight.app"
