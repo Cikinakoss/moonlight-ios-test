@@ -53,7 +53,9 @@
 		FB1A67A7213245BD00507771 /* StreamManager.m in Sources */ = {isa = PBXBuildFile; fileRef = FB89461B19F646E200339C8A /* StreamManager.m */; };
 		FB1A67A9213245BD00507771 /* VideoDecoderRenderer.m in Sources */ = {isa = PBXBuildFile; fileRef = FB89461D19F646E200339C8A /* VideoDecoderRenderer.m */; };
 		C120F0010000000000000001 /* LatestFrameDecoder.m in Sources (tvOS) */ = {isa = PBXBuildFile; fileRef = C120F0010000000000000003 /* LatestFrameDecoder.m */; };
+		C120F0020000000000000001 /* LatestFramePresentationScheduler.m in Sources (tvOS) */ = {isa = PBXBuildFile; fileRef = C120F0020000000000000003 /* LatestFramePresentationScheduler.m */; };
 		C120F0010000000000000002 /* LatestFrameDecoder.m in Sources (iOS) */ = {isa = PBXBuildFile; fileRef = C120F0010000000000000003 /* LatestFrameDecoder.m */; };
+		C120F0020000000000000002 /* LatestFramePresentationScheduler.m in Sources (iOS) */ = {isa = PBXBuildFile; fileRef = C120F0020000000000000003 /* LatestFramePresentationScheduler.m */; };
 		FB1A67AB213245C500507771 /* CryptoManager.m in Sources */ = {isa = PBXBuildFile; fileRef = FB89460619F646E200339C8A /* CryptoManager.m */; };
 		FB1A67AF213245C500507771 /* IdManager.m in Sources */ = {isa = PBXBuildFile; fileRef = FB53E1421BE5DC4400CD6ECE /* IdManager.m */; };
 		FB1A67B1213245D500507771 /* HttpManager.m in Sources */ = {isa = PBXBuildFile; fileRef = FB89461019F646E200339C8A /* HttpManager.m */; };
@@ -284,7 +286,9 @@
 		FB89461C19F646E200339C8A /* VideoDecoderRenderer.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = VideoDecoderRenderer.h; sourceTree = "<group>"; };
 		FB89461D19F646E200339C8A /* VideoDecoderRenderer.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = VideoDecoderRenderer.m; sourceTree = "<group>"; };
 		C120F0010000000000000003 /* LatestFrameDecoder.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = LatestFrameDecoder.m; sourceTree = "<group>"; };
+		C120F0020000000000000003 /* LatestFramePresentationScheduler.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = LatestFramePresentationScheduler.m; sourceTree = "<group>"; };
 		C120F0010000000000000004 /* LatestFrameDecoder.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = LatestFrameDecoder.h; sourceTree = "<group>"; };
+		C120F0020000000000000004 /* LatestFramePresentationScheduler.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = LatestFramePresentationScheduler.h; sourceTree = "<group>"; };
 		FB89462119F646E200339C8A /* Utils.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = Utils.h; sourceTree = "<group>"; };
 		FB89462219F646E200339C8A /* Utils.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = Utils.m; sourceTree = "<group>"; };
 		FB89462419F646E200339C8A /* MainFrameViewController.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MainFrameViewController.h; sourceTree = "<group>"; };
@@ -555,7 +559,9 @@
 				FB89461C19F646E200339C8A /* VideoDecoderRenderer.h */,
 				FB89461D19F646E200339C8A /* VideoDecoderRenderer.m */,
 				C120F0010000000000000003 /* LatestFrameDecoder.m */,
+				C120F0020000000000000003 /* LatestFramePresentationScheduler.m */,
 				C120F0010000000000000004 /* LatestFrameDecoder.h */,
+				C120F0020000000000000004 /* LatestFramePresentationScheduler.h */,
 				9803CCAB254F9EAF00EE185E /* ConnectionCallbacks.h */,
 			);
 			path = Stream;
@@ -884,6 +890,7 @@
 				FB1A67A7213245BD00507771 /* StreamManager.m in Sources */,
 				FB1A67A9213245BD00507771 /* VideoDecoderRenderer.m in Sources */,
 				C120F0010000000000000001 /* LatestFrameDecoder.m in Sources (tvOS) */,
+				C120F0020000000000000001 /* LatestFramePresentationScheduler.m in Sources (tvOS) */,
 				FB1A67A12132458C00507771 /* main.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -898,6 +905,7 @@
 				FB1A674D2131E65900507771 /* KeyboardSupport.m in Sources */,
 				FB89463219F646E200339C8A /* VideoDecoderRenderer.m in Sources */,
 				C120F0010000000000000002 /* LatestFrameDecoder.m in Sources (iOS) */,
+				C120F0020000000000000002 /* LatestFramePresentationScheduler.m in Sources (iOS) */,
 				FB290D0419B2C406004C83CF /* AppDelegate.m in Sources */,
 				FB9AFD401A7E127D00872C98 /* AppListResponse.m in Sources */,
 				FB89463419F646E200339C8A /* Utils.m in Sources */,

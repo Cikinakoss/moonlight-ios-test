@@ -7,6 +7,10 @@ and normal frame pacing for that session: compressed input always uses the seria
 worker, and final uncompressed samples always use DisplayImmediately. Saved
 preferences remain intact when Latest is switched Off.
 
+**Presentation Trigger** now offers Display Sync (the original/default behavior
+described below) and Immediate. See [presentation-trigger.md](presentation-trigger.md)
+for the new coalesced serial presentation worker and precise age/count semantics.
+
 The known working baseline is dc03a0c, also tagged working-immediate-presentation.
 This experiment preserves the existing 120 FPS stream request and the previous
 A/B/C pipelines. The rendering backend remains AVSampleBufferDisplayLayer.
@@ -102,7 +106,7 @@ connection-failure callback rather than leaving a permanently frozen stream.
 Normal decoded-frame overwrites and stale-output rejections never request IDRs.
 
 Stop first prevents compressed submission, wakes and joins the existing worker,
-then waits for all VT callbacks, invalidates/releases the session and clears the
+drains the Immediate presentation worker when selected, then waits for all VT callbacks, invalidates/releases the session and clears the
 slot. The main queue does no VT wait. Display-layer recovery in this mode changes
 only the presentation layer and does not release the concurrently used compressed
 format description. Compressed format/parameter storage is released after stop.

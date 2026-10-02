@@ -15,6 +15,7 @@
 FOUNDATION_EXPORT NSString* const MLAsyncVideoSubmissionDefaultsKey;
 FOUNDATION_EXPORT NSString* const MLImmediatePresentationDefaultsKey;
 FOUNDATION_EXPORT NSString* const MLLatestDecodedFrameDefaultsKey;
+FOUNDATION_EXPORT NSString* const MLLatestPresentationImmediateDefaultsKey;
 
 @interface VideoDecoderRenderer : NSObject
 

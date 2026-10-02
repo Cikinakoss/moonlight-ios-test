@@ -1,6 +1,8 @@
 // Exercise the production mailbox and CF ownership on macOS without a codec/device.
 #import "../Limelight/Stream/LatestFrameDecoder.m"
+#import "../Limelight/Stream/LatestFramePresentationScheduler.m"
 #include <stdlib.h>
+#include <math.h>
 
 static atomic_uint releasedImages;
 static unsigned int idrRequests;
@@ -25,6 +27,123 @@ static CVPixelBufferRef createImage(void) {
 static void output(LatestFrameDecoder* decoder, CVPixelBufferRef image, int pts, uint64_t sequence) {
     [decoder receiveImage:image pts:CMTimeMake(pts, 120) sequence:sequence generation:1 metadata:@{}
         submittedAt:CACurrentMediaTime() status:noErr flags:kVTDecodeInfo_Asynchronous];
+}
+
+static void testImmediatePresentation(void) {
+    @autoreleasepool {
+        LatestFrameDecoder* decoder = [[LatestFrameDecoder alloc] init];
+        dispatch_queue_t queue = dispatch_queue_create("test.latest-presentation", DISPATCH_QUEUE_SERIAL);
+        dispatch_semaphore_t gate = dispatch_semaphore_create(0);
+        dispatch_async(queue, ^{ dispatch_semaphore_wait(gate, DISPATCH_TIME_FOREVER); });
+        __block int enqueues = 0;
+        LatestFramePresentationScheduler* scheduler = [[LatestFramePresentationScheduler alloc] initWithQueue:queue handler:^{
+            CFTimeInterval decodedAt;
+            uint64_t sequence, generation;
+            CMSampleBufferRef sample = [decoder copyPresentationSampleAtTime:CACurrentMediaTime()
+                decodedAt:&decodedAt sequence:&sequence generation:&generation];
+            CHECK(sample != NULL);
+            CHECK(CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTimeMake(102, 120)) == 0);
+            CHECK([decoder isPresentationCurrentForSequence:sequence generation:generation]);
+            // Known times verify selection and completed-enqueue ages stay distinct.
+            [decoder recordEnqueueAt:decodedAt + 0.006 decodedAt:decodedAt
+                selectedAt:decodedAt + 0.002 displayTarget:decodedAt + 0.016];
+            enqueues++;
+            CFRelease(sample);
+        }];
+        [scheduler start];
+        [decoder setOutputAvailableHandler:^{ [scheduler requestPresentation]; }];
+        CVPixelBufferRef image = createImage();
+        output(decoder, image, 100, 1);
+        output(decoder, image, 102, 2);
+        output(decoder, image, 101, 3); // Rejected callbacks must not request presentation.
+        dispatch_apply(1000, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^(size_t i) {
+            [scheduler requestPresentation];
+        });
+        NSDictionary* stats = [scheduler takeStatistics];
+        CHECK([stats[@"requests"] intValue] == 1002 && [stats[@"coalesced"] intValue] == 1001);
+        CHECK([stats[@"outstanding"] intValue] == 1 && [stats[@"passes"] intValue] == 0);
+        dispatch_semaphore_signal(gate);
+        dispatch_sync(queue, ^{});
+        CHECK(enqueues == 1); // All queued requests read the newest image once.
+        stats = [scheduler takeStatistics];
+        CHECK([stats[@"outstanding"] intValue] == 0 && [stats[@"passes"] intValue] == 1);
+        stats = [decoder takeStatistics];
+        CHECK([stats[@"enqueues"] intValue] == 1 && [stats[@"slotDepth"] intValue] == 0);
+        CHECK(fabs([stats[@"enqueueAgeMs"] doubleValue] - 6) < 0.01);
+        CHECK(fabs([stats[@"enqueueSelectionAgeMs"] doubleValue] - 2) < 0.01);
+        CHECK(fabs([stats[@"syncSelectionAgeMs"] doubleValue] - 2) < 0.01);
+        CHECK(fabs([stats[@"targetLeadMs"] doubleValue] - 14) < 0.01);
+        [scheduler stop];
+        [decoder setOutputAvailableHandler:nil];
+
+        // A newer output during wrapping makes the selected Immediate candidate stale.
+        output(decoder, image, 103, 4);
+        CFTimeInterval decodedAt;
+        uint64_t sequence, generation;
+        CMSampleBufferRef sample = [decoder copyPresentationSampleAtTime:CACurrentMediaTime()
+            decodedAt:&decodedAt sequence:&sequence generation:&generation];
+        CHECK(sample != NULL);
+        output(decoder, image, 104, 5);
+        output(decoder, image, 103, 6);
+        CHECK(![decoder isPresentationCurrentForSequence:sequence generation:generation]);
+        CFRelease(sample);
+        sample = [decoder copyPresentationSampleAtTime:CACurrentMediaTime()
+            decodedAt:&decodedAt sequence:&sequence generation:&generation];
+        CHECK(sample && CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTimeMake(104, 120)) == 0);
+        CHECK([decoder isPresentationCurrentForSequence:sequence generation:generation]);
+        [decoder recordEnqueueAt:decodedAt + 0.001 decodedAt:decodedAt selectedAt:decodedAt + 0.0005 displayTarget:0];
+        CFRelease(sample);
+        stats = [decoder takeStatistics];
+        CHECK([stats[@"staleCandidates"] intValue] == 1 && [stats[@"late"] intValue] == 1);
+        CHECK([stats[@"syncEnqueues"] intValue] == 0 && [stats[@"enqueues"] intValue] == 1);
+        [decoder stop];
+        CHECK(![decoder isPresentationCurrentForSequence:sequence generation:generation]);
+        CVPixelBufferRelease(image);
+    }
+}
+
+static void testPresentationSchedulerLifecycle(void) {
+    @autoreleasepool {
+        dispatch_queue_t queue = dispatch_queue_create("test.presentation-lifecycle", DISPATCH_QUEUE_SERIAL);
+        dispatch_semaphore_t gate = dispatch_semaphore_create(0);
+        dispatch_async(queue, ^{ dispatch_semaphore_wait(gate, DISPATCH_TIME_FOREVER); });
+        __block int passes = 0;
+        __block int active = 0;
+        __block __weak LatestFramePresentationScheduler* weakScheduler;
+        LatestFramePresentationScheduler* scheduler = [[LatestFramePresentationScheduler alloc] initWithQueue:queue handler:^{
+            CHECK(++active == 1); // Never two concurrent presentation handlers.
+            passes++;
+            if (passes == 1) {
+                for (int i = 0; i < 1000; i++) { [weakScheduler requestPresentation]; }
+            }
+            active--;
+        }];
+        weakScheduler = scheduler;
+        [scheduler start];
+        [scheduler requestPresentation];
+        [scheduler cancel]; // Close deterministically while the task is queued.
+        [scheduler requestPresentation]; // Closed gate must ignore this request.
+        dispatch_semaphore_signal(gate);
+        [scheduler stop];
+        CHECK(passes == 0);
+        NSDictionary* stats = [scheduler takeStatistics];
+        CHECK([stats[@"outstanding"] intValue] == 0 && [stats[@"requests"] intValue] == 1);
+        [scheduler start];
+        [scheduler requestPresentation];
+        dispatch_sync(queue, ^{});
+        CHECK(passes == 2); // Arrivals during a pass coalesce into exactly one more pass.
+        stats = [scheduler takeStatistics];
+        CHECK([stats[@"requests"] intValue] == 1001 && [stats[@"coalesced"] intValue] == 1000);
+        CHECK([stats[@"passes"] intValue] == 2 && [stats[@"outstanding"] intValue] == 0);
+        [scheduler requestPresentation]; // New work after the idle transition is not lost.
+        dispatch_sync(queue, ^{});
+        CHECK(passes == 3);
+        [scheduler stop];
+        [scheduler stop];
+        [scheduler requestPresentation];
+        stats = [scheduler takeStatistics];
+        CHECK([stats[@"requests"] intValue] == 1 && [stats[@"outstanding"] intValue] == 0);
+    }
 }
 
 int main(void) {
@@ -141,7 +260,9 @@ int main(void) {
         [decoder receiveImage:NULL pts:kCMTimeInvalid sequence:3 generation:1 metadata:nil
             submittedAt:CACurrentMediaTime() status:-1 flags:0];
         CHECK(idrRequests == 1);
-        NSLog(@"Latest-frame tests passed: replacement, PTS ordering, consumed-slot watermark, CF ownership, concurrency, shutdown and recovery.");
+        testImmediatePresentation();
+        testPresentationSchedulerLifecycle();
+        NSLog(@"Latest-frame tests passed: mailbox ownership/ordering, coalesced presentation, stale candidates, distinct ages, concurrency, cancellation, restart and recovery.");
     }
     return 0;
 }

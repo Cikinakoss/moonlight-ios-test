@@ -9,6 +9,7 @@
 #import "VideoDecoderRenderer.h"
 #import "StreamView.h"
 #import "LatestFrameDecoder.h"
+#import "LatestFramePresentationScheduler.h"
 
 #include <stdatomic.h>
 
@@ -25,6 +26,7 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
 NSString* const MLAsyncVideoSubmissionDefaultsKey = @"ExperimentalAsyncVideoSubmission";
 NSString* const MLImmediatePresentationDefaultsKey = @"ExperimentalImmediatePresentation";
 NSString* const MLLatestDecodedFrameDefaultsKey = @"ExperimentalLatestDecodedFrame";
+NSString* const MLLatestPresentationImmediateDefaultsKey = @"ExperimentalLatestPresentationImmediate";
 
 // The connection's existing compressed-frame submission function.
 int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
@@ -50,7 +52,13 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     BOOL _asyncSubmission;
     BOOL _immediatePresentation;
     BOOL _latestDecodedMode;
+    BOOL _immediateLatestPresentation;
     LatestFrameDecoder* _latestDecoder;
+    LatestFramePresentationScheduler* _latestPresentationScheduler;
+    BOOL _immediateLayerShown; // Owned by the serial presentation queue.
+    NSUInteger _syncPresentationRequests; // Main thread only.
+    double _displayIntervalTotal;
+    NSUInteger _displayIntervalSamples;
     BOOL _reportedLatestFailure;
     AVSampleBufferVideoRenderer* _sampleBufferRenderer;
     dispatch_queue_t _videoSubmitQueue;
@@ -127,6 +135,14 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     }
     if (_latestDecodedMode) {
         _latestDecoder = [[LatestFrameDecoder alloc] init];
+        _immediateLatestPresentation = [[NSUserDefaults standardUserDefaults] boolForKey:MLLatestPresentationImmediateDefaultsKey];
+        if (_immediateLatestPresentation) {
+            dispatch_queue_t presentationQueue = dispatch_queue_create("com.moonlight.latest-presentation",
+                dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
+            __weak VideoDecoderRenderer* weakSelf = self;
+            _latestPresentationScheduler = [[LatestFramePresentationScheduler alloc] initWithQueue:presentationQueue
+                handler:^{ [weakSelf presentLatestDecodedFrameImmediately]; }];
+        }
         // This mode always decodes asynchronously and supersedes both old toggles.
         _asyncSubmission = YES;
     }
@@ -161,6 +177,9 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     }
     [self performOnMainThread:^{
         self->_displayCallbacks = 0;
+        self->_syncPresentationRequests = 0;
+        self->_displayIntervalTotal = 0;
+        self->_displayIntervalSamples = 0;
         self->_lastStatisticsTime = CACurrentMediaTime();
         atomic_store(&self->_submittedFrames, 0);
         atomic_store(&self->_enqueuedFrames, 0);
@@ -169,7 +188,8 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         atomic_store(&self->_rendererReady, -1);
         @synchronized (self) {
             if (self->_latestDecodedMode) {
-                self->_submissionStatistics = [NSString stringWithFormat:@"Latest decoded: ON; requested: %d FPS", self->frameRate];
+                self->_submissionStatistics = [NSString stringWithFormat:@"Latest decoded: ON; trigger: %@; requested: %d FPS",
+                    self->_immediateLatestPresentation ? @"Immediate" : @"Display Sync", self->frameRate];
             }
             else {
                 self->_submissionStatistics = [NSString stringWithFormat:@"Requested: %d FPS; submission: %@; immediate: %@",
@@ -191,6 +211,18 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         frameRate, _asyncSubmission ? @"ON" : @"OFF", (_latestDecodedMode || _immediatePresentation) ? @"ON" : @"OFF");
     if (_latestDecodedMode) {
         Log(LOG_I, @"Latest Decoded Frame: ON; async decode and immediate uncompressed presentation supersede previous toggles");
+        Log(LOG_I, @"Latest-frame Presentation Trigger: %@", _immediateLatestPresentation ? @"Immediate" : @"Display Sync");
+    }
+    if (_immediateLatestPresentation) {
+        _immediateLayerShown = NO;
+        [_latestPresentationScheduler start];
+        __weak VideoDecoderRenderer* weakSelf = self;
+        [_latestDecoder setOutputAvailableHandler:^{
+            VideoDecoderRenderer* renderer = weakSelf;
+            if (renderer && !atomic_load(&renderer->_stopping)) {
+                [renderer->_latestPresentationScheduler requestPresentation];
+            }
+        }];
     }
 
     if (_asyncSubmission) {
@@ -255,17 +287,30 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     double callbacks = _displayCallbacks / interval;
     if (_latestDecodedMode) {
         NSDictionary* stats = [_latestDecoder takeStatistics];
+        NSDictionary* presentationStats = [_latestPresentationScheduler takeStatistics];
+        double requests = _immediateLatestPresentation ? [presentationStats[@"requests"] doubleValue] : _syncPresentationRequests;
+        NSString* syncTiming = _immediateLatestPresentation ? @"N/A (Immediate)" : [NSString stringWithFormat:
+            @"%.2f ms; target lead: %.2f ms", [stats[@"syncSelectionAgeMs"] doubleValue], [stats[@"targetLeadMs"] doubleValue]];
         NSString* text = [NSString stringWithFormat:
-            @"Latest decoded: ON; requested: %d FPS\nVT submitted/decoded: %.1f/%.1f FPS; async outputs: %.1f/s\nPresentation submissions: %.1f/s; overwritten: %.1f/s; late rejected: %.1f/s\nSlot depth: %@; VT in flight: %@; display callbacks: %.1f/s\nVT drops/errors/resets: %@/%@/%@; presentation errors: %@\nDecode latency: %.2f ms; Presented Frame Age: %.2f ms\nDisplay not-ready ticks: %u; readiness: %@; pixel format: %08x",
-            frameRate, [stats[@"submitted"] doubleValue] / interval, [stats[@"decoded"] doubleValue] / interval,
-            [stats[@"asyncOutputs"] doubleValue] / interval, [stats[@"presented"] doubleValue] / interval,
+            @"Latest decoded: ON; trigger: %@; requested: %d FPS\nVT submitted/decoded: %.1f/%.1f FPS; async outputs: %.1f/s\nPresentation requests/enqueues: %.1f/%.1f per s; coalesced: %.1f/s\nOverwritten: %.1f/s; late rejected: %.1f/s; stale candidates: %.1f/s\nSlot depth: %@; presentation request depth: %d; VT in flight: %@\nDisplay callbacks: %.1f/s; link interval: %.2f ms\nVT drops/errors/resets: %@/%@/%@; presentation errors: %@\nDecode latency: %.2f ms; Presented Frame Age (selection): %.2f ms\nDecode Output -> Enqueue Age: %.2f ms\nDisplay Sync selection age: %@\nDisplay not-ready checks: %u; readiness: %@; pixel format: %08x",
+            _immediateLatestPresentation ? @"Immediate" : @"Display Sync", frameRate,
+            [stats[@"submitted"] doubleValue] / interval, [stats[@"decoded"] doubleValue] / interval,
+            [stats[@"asyncOutputs"] doubleValue] / interval, requests / interval,
+            [stats[@"enqueues"] doubleValue] / interval, [presentationStats[@"coalesced"] doubleValue] / interval,
             [stats[@"overwritten"] doubleValue] / interval, [stats[@"late"] doubleValue] / interval,
-            stats[@"slotDepth"], stats[@"inFlight"], callbacks, stats[@"vtDropped"], stats[@"errors"],
+            [stats[@"staleCandidates"] doubleValue] / interval, stats[@"slotDepth"],
+            [presentationStats[@"outstanding"] intValue], stats[@"inFlight"], callbacks,
+            _displayIntervalSamples ? 1000 * _displayIntervalTotal / _displayIntervalSamples : 0,
+            stats[@"vtDropped"], stats[@"errors"],
             stats[@"resets"], stats[@"presentationErrors"], [stats[@"decodeMs"] doubleValue],
-            [stats[@"ageMs"] doubleValue], backpressure, readiness, [stats[@"pixelFormat"] unsignedIntValue]];
+            [stats[@"enqueueSelectionAgeMs"] doubleValue], [stats[@"enqueueAgeMs"] doubleValue],
+            syncTiming, backpressure, readiness, [stats[@"pixelFormat"] unsignedIntValue]];
         @synchronized (self) { _submissionStatistics = text; }
         Log(LOG_I, @"%@", text);
         _displayCallbacks = 0;
+        _syncPresentationRequests = 0;
+        _displayIntervalTotal = 0;
+        _displayIntervalSamples = 0;
         _lastStatisticsTime = now;
         return;
     }
@@ -288,9 +333,16 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         return;
     }
     _displayCallbacks++;
+    if (_latestDecodedMode && sender.targetTimestamp > sender.timestamp) {
+        _displayIntervalTotal += sender.targetTimestamp - sender.timestamp;
+        _displayIntervalSamples++;
+    }
     [self updateSubmissionStatistics];
     if (_latestDecodedMode) {
-        [self presentLatestDecodedFrame];
+        if (!_immediateLatestPresentation) {
+            _syncPresentationRequests++;
+            [self presentLatestDecodedFrameForDisplayTarget:sender.targetTimestamp];
+        }
         return;
     }
     if (_asyncSubmission) {
@@ -326,6 +378,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     if (atomic_exchange(&_stopping, true)) {
         return;
     }
+    [_latestPresentationScheduler cancel];
     if (_asyncSubmission) {
         // DrStop is called by the core on the connection/termination operation,
         // never the main thread. The main queue stays free for layer recovery.
@@ -334,6 +387,9 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         dispatch_group_wait(_videoSubmitGroup, DISPATCH_TIME_FOREVER);
     }
     if (_latestDecodedMode) {
+        // Close/drain presentation before decoder teardown. Callbacks can only
+        // signal the closed coalescer, and the main queue stays free for its work.
+        [_latestPresentationScheduler stop];
         // No further compressed submissions; drain callbacks before releasing the slot.
         [_latestDecoder stop];
         [_decoderLock lock];
@@ -352,7 +408,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     }];
 }
 
-- (void)presentLatestDecodedFrame
+- (void)presentLatestDecodedFrameForDisplayTarget:(CFTimeInterval)displayTarget
 {
     // Main thread only. Layer failure recovery does not touch the VT format/session.
     if (displayLayer.status == AVQueuedSampleBufferRenderingStatusFailed) {
@@ -366,16 +422,76 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         atomic_fetch_add(&_backpressureDrops, 1);
         return;
     }
-    CMSampleBufferRef sample = [_latestDecoder copyPresentationSampleAtTime:CACurrentMediaTime()];
+    CFTimeInterval selectedAt = CACurrentMediaTime();
+    CFTimeInterval decodedAt = 0;
+    CMSampleBufferRef sample = [_latestDecoder copyPresentationSampleAtTime:selectedAt decodedAt:&decodedAt sequence:NULL generation:NULL];
     if (!sample) {
         return;
     }
     [displayLayer enqueueSampleBuffer:sample];
+    CFTimeInterval enqueueAt = CACurrentMediaTime();
+    [_latestDecoder recordEnqueueAt:enqueueAt decodedAt:decodedAt selectedAt:selectedAt displayTarget:displayTarget];
     CFRelease(sample);
     atomic_fetch_add(&_enqueuedFrames, 1);
     if (displayLayer.hidden) {
         displayLayer.hidden = NO;
         [_callbacks videoContentShown];
+    }
+}
+
+- (void)presentLatestDecodedFrameImmediately
+{
+    // Sole consumer on the dedicated serial queue. No layer access on VT threads.
+    if (atomic_load(&_stopping)) {
+        return;
+    }
+    if (@available(iOS 17.0, tvOS 17.0, *)) {
+        AVSampleBufferVideoRenderer* renderer = _sampleBufferRenderer;
+        if (renderer.status == AVQueuedSampleBufferRenderingStatusFailed) {
+            Log(LOG_E, @"Immediate latest-frame renderer failed: %@", renderer.error);
+            [self performOnMainThread:^{
+                if (!atomic_load(&self->_stopping)) { [self reinitializeDisplayLayer]; }
+            }];
+            if (atomic_load(&_stopping)) { return; }
+            renderer = _sampleBufferRenderer;
+            _immediateLayerShown = NO;
+        }
+        BOOL ready = renderer.readyForMoreMediaData;
+        atomic_store(&_rendererReady, ready);
+        if (!ready) {
+            // Keep the slot replaceable. A new decoded output requests a retry;
+            // do not spin, queue frame payloads, or gate retries on CADisplayLink.
+            atomic_fetch_add(&_backpressureDrops, 1);
+            return;
+        }
+        CFTimeInterval selectedAt = CACurrentMediaTime();
+        CFTimeInterval decodedAt = 0;
+        uint64_t sequence = 0, generation = 0;
+        CMSampleBufferRef sample = [_latestDecoder copyPresentationSampleAtTime:selectedAt decodedAt:&decodedAt
+            sequence:&sequence generation:&generation];
+        if (!sample) { return; }
+        // New output during wrapping signals another coalesced pass. Avoid enqueueing
+        // a superseded candidate; preserve the shared PTS/sequence freshness rule.
+        if (atomic_load(&_stopping) || ![_latestDecoder isPresentationCurrentForSequence:sequence generation:generation]) {
+            CFRelease(sample);
+            return;
+        }
+        [renderer enqueueSampleBuffer:sample]; // Apple's background-safe 17+ API.
+        CFTimeInterval enqueueAt = CACurrentMediaTime();
+        [_latestDecoder recordEnqueueAt:enqueueAt decodedAt:decodedAt selectedAt:selectedAt displayTarget:0];
+        CFRelease(sample);
+        atomic_fetch_add(&_enqueuedFrames, 1);
+        if (!_immediateLayerShown) {
+            // Only first-image visibility and layer recreation need the main queue.
+            // Neither captures a frame or builds per-frame main-queue work.
+            [self performOnMainThread:^{
+                if (!atomic_load(&self->_stopping) && self->displayLayer.hidden) {
+                    self->displayLayer.hidden = NO;
+                    [self->_callbacks videoContentShown];
+                }
+            }];
+            _immediateLayerShown = YES;
+        }
     }
 }
 

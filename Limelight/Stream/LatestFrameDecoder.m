@@ -56,6 +56,9 @@
     NSUInteger _inFlight;
     double _decodeTimeTotal, _ageTotal;
     OSType _outputPixelFormat;
+    dispatch_block_t _outputAvailableHandler;
+    uint64_t _enqueues, _syncEnqueues, _staleCandidates;
+    double _enqueueAgeTotal, _enqueueSelectionAgeTotal, _syncAgeTotal, _targetLeadTotal;
 }
 
 - (id)init {
@@ -112,6 +115,13 @@
 
 - (void)stop {
     [self closeSession];
+    [self setOutputAvailableHandler:nil];
+}
+
+- (void)setOutputAvailableHandler:(dispatch_block_t)handler {
+    [_slotLock lock];
+    _outputAvailableHandler = [handler copy];
+    [_slotLock unlock];
 }
 
 - (NSString*)fatalError {
@@ -198,6 +208,7 @@
         submittedAt:(CFTimeInterval)submittedAt status:(OSStatus)status flags:(VTDecodeInfoFlags)flags {
     CFTimeInterval now = CACurrentMediaTime();
     BOOL requestIDR = NO;
+    dispatch_block_t notify = nil;
     [_slotLock lock];
     if (_inFlight > 0) {
         _inFlight--;
@@ -243,12 +254,16 @@
             _pendingSequence = _newestSequence = sequence;
             _pendingReadyAt = now;
             _pendingMetadata = metadata;
+            notify = _outputAvailableHandler;
         }
         else {
             _late++;
         }
     }
     [_slotLock unlock];
+    if (notify) {
+        notify(); // Never wait for presentation on a VideoToolbox callback thread.
+    }
     if (requestIDR) {
         NSLog(@"Latest decoder output failed: %d; requesting IDR and reset", (int)status);
         LiRequestIdrFrame();
@@ -327,6 +342,11 @@
 }
 
 - (CMSampleBufferRef)copyPresentationSampleAtTime:(CFTimeInterval)time {
+    return [self copyPresentationSampleAtTime:time decodedAt:NULL sequence:NULL generation:NULL];
+}
+
+- (CMSampleBufferRef)copyPresentationSampleAtTime:(CFTimeInterval)time decodedAt:(CFTimeInterval*)decodedAt
+    sequence:(uint64_t*)sequence generation:(uint64_t*)generation {
     [_slotLock lock];
     if (!_pendingImage || !_acceptingOutputs || _needsReset) {
         [_slotLock unlock];
@@ -337,6 +357,9 @@
     CMTime pts = _pendingPTS;
     double age = MAX(0, time - _pendingReadyAt);
     NSDictionary* metadata = _pendingMetadata;
+    if (decodedAt) { *decodedAt = _pendingReadyAt; }
+    if (sequence) { *sequence = _pendingSequence; }
+    if (generation) { *generation = _generation; }
     _pendingImage = NULL;
     _pendingMetadata = nil;
     [_slotLock unlock];
@@ -382,6 +405,28 @@
     return sample;
 }
 
+- (BOOL)isPresentationCurrentForSequence:(uint64_t)sequence generation:(uint64_t)generation {
+    [_slotLock lock];
+    BOOL current = _acceptingOutputs && !_needsReset && generation == _generation && sequence == _newestSequence;
+    if (!current) { _staleCandidates++; }
+    [_slotLock unlock];
+    return current;
+}
+
+- (void)recordEnqueueAt:(CFTimeInterval)time decodedAt:(CFTimeInterval)decodedAt
+    selectedAt:(CFTimeInterval)selectedAt displayTarget:(CFTimeInterval)displayTarget {
+    [_slotLock lock];
+    _enqueues++;
+    _enqueueAgeTotal += MAX(0, time - decodedAt);
+    _enqueueSelectionAgeTotal += MAX(0, selectedAt - decodedAt);
+    if (displayTarget > 0) {
+        _syncEnqueues++;
+        _syncAgeTotal += MAX(0, selectedAt - decodedAt);
+        _targetLeadTotal += displayTarget - selectedAt; // Negative means selection was late.
+    }
+    [_slotLock unlock];
+}
+
 - (NSDictionary*)takeStatistics {
     [_slotLock lock];
     NSDictionary* stats = @{
@@ -391,11 +436,18 @@
         @"presentationErrors": @(_presentationErrors), @"slotDepth": @(_pendingImage ? 1 : 0),
         @"inFlight": @(_inFlight), @"pixelFormat": @(_outputPixelFormat),
         @"decodeMs": @(_decoded ? 1000 * _decodeTimeTotal / _decoded : 0),
-        @"ageMs": @(_presented ? 1000 * _ageTotal / _presented : 0)
+        @"ageMs": @(_presented ? 1000 * _ageTotal / _presented : 0),
+        @"enqueues": @(_enqueues), @"staleCandidates": @(_staleCandidates), @"syncEnqueues": @(_syncEnqueues),
+        @"enqueueAgeMs": @(_enqueues ? 1000 * _enqueueAgeTotal / _enqueues : 0),
+        @"enqueueSelectionAgeMs": @(_enqueues ? 1000 * _enqueueSelectionAgeTotal / _enqueues : 0),
+        @"syncSelectionAgeMs": @(_syncEnqueues ? 1000 * _syncAgeTotal / _syncEnqueues : 0),
+        @"targetLeadMs": @(_syncEnqueues ? 1000 * _targetLeadTotal / _syncEnqueues : 0)
     };
     _submitted = _decoded = _overwritten = _presented = _late = _vtDropped = 0;
     _asyncOutputs = _errors = _resets = _presentationErrors = 0;
     _decodeTimeTotal = _ageTotal = 0;
+    _enqueues = _syncEnqueues = _staleCandidates = 0;
+    _enqueueAgeTotal = _enqueueSelectionAgeTotal = _syncAgeTotal = _targetLeadTotal = 0;
     [_slotLock unlock];
     return stats;
 }

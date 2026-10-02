@@ -20,6 +20,7 @@
     UISegmentedControl* _asyncVideoSubmissionSelector;
     UISegmentedControl* _immediatePresentationSelector;
     UISegmentedControl* _latestDecodedFrameSelector;
+    UISegmentedControl* _presentationTriggerSelector;
 }
 
 @dynamic overrideUserInterfaceStyle;
@@ -317,6 +318,25 @@ BOOL isCustomResolution(CGSize res) {
         _latestDecodedFrameSelector.selectedSegmentIndex = 0;
     }
     [self.scrollView addSubview:_latestDecodedFrameSelector];
+
+    UILabel* triggerLabel = [[UILabel alloc] initWithFrame:CGRectMake(referenceFrame.origin.x,
+        CGRectGetMaxY(_latestDecodedFrameSelector.frame) + 12, referenceFrame.size.width, 24)];
+    triggerLabel.text = @"Presentation Trigger";
+    triggerLabel.textColor = UIColor.whiteColor;
+    triggerLabel.font = [UIFont systemFontOfSize:17];
+    [self.scrollView addSubview:triggerLabel];
+    _presentationTriggerSelector = [[UISegmentedControl alloc] initWithItems:@[@"Display Sync", @"Immediate"]];
+    _presentationTriggerSelector.frame = CGRectMake(referenceFrame.origin.x,
+        CGRectGetMaxY(triggerLabel.frame) + 5, referenceFrame.size.width, referenceFrame.size.height);
+    _presentationTriggerSelector.selectedSegmentIndex =
+        [[NSUserDefaults standardUserDefaults] boolForKey:MLLatestPresentationImmediateDefaultsKey] ? 1 : 0;
+    [self.scrollView addSubview:_presentationTriggerSelector];
+    [_latestDecodedFrameSelector addTarget:self action:@selector(latestDecodedFrameChanged) forControlEvents:UIControlEventValueChanged];
+    [self latestDecodedFrameChanged];
+}
+
+- (void)latestDecodedFrameChanged {
+    _presentationTriggerSelector.enabled = _latestDecodedFrameSelector.enabled && _latestDecodedFrameSelector.selectedSegmentIndex == 1;
 }
 
 - (void) touchModeChanged {
@@ -583,6 +603,8 @@ BOOL isCustomResolution(CGSize res) {
                                           forKey:MLImmediatePresentationDefaultsKey];
     [[NSUserDefaults standardUserDefaults] setBool:_latestDecodedFrameSelector.selectedSegmentIndex == 1
                                           forKey:MLLatestDecodedFrameDefaultsKey];
+    [[NSUserDefaults standardUserDefaults] setBool:_presentationTriggerSelector.selectedSegmentIndex == 1
+                                          forKey:MLLatestPresentationImmediateDefaultsKey];
     DataManager* dataMan = [[DataManager alloc] init];
     NSInteger framerate = [self getChosenFrameRate];
     NSInteger height = [self getChosenStreamHeight];
