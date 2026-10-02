@@ -1,0 +1,65 @@
+name: iPad 120 FPS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ipad-120fps-test
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Inspect Xcode project and SDKs
+        run: |
+          xcodebuild -version
+          xcodebuild -list -project Moonlight.xcodeproj
+          xcodebuild -showsdks
+
+      - name: Download iOS platform
+        run: xcodebuild -downloadPlatform iOS
+
+      - name: Build unsigned iOS app
+        run: |
+          xcodebuild \
+            -project Moonlight.xcodeproj \
+            -scheme Moonlight \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/MoonlightBuild" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          app="$RUNNER_TEMP/MoonlightBuild/Build/Products/Release-iphoneos/Moonlight.app"
+          test -d "$app"
+          test -f "$app/Moonlight"
+          mkdir -p "$RUNNER_TEMP/MoonlightIPA/Payload"
+          ditto "$app" "$RUNNER_TEMP/MoonlightIPA/Payload/Moonlight.app"
+          cd "$RUNNER_TEMP/MoonlightIPA"
+          zip -qry "$GITHUB_WORKSPACE/Moonlight-iPad-120FPS.ipa" Payload
+          unzip -l "$GITHUB_WORKSPACE/Moonlight-iPad-120FPS.ipa"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v6
+        with:
+          name: Moonlight-iPad-120FPS
+          path: Moonlight-iPad-120FPS.ipa
+          if-no-files-found: error

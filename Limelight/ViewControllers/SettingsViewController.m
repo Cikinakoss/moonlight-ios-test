@@ -188,16 +188,7 @@ BOOL isCustomResolution(CGSize res) {
         }
     }
 
-    // Only show the 120 FPS option if we have a > 60-ish Hz display
-    bool enable120Fps = false;
-    if (@available(iOS 10.3, tvOS 10.3, *)) {
-        if ([UIScreen mainScreen].maximumFramesPerSecond > 62) {
-            enable120Fps = true;
-        }
-    }
-    if (!enable120Fps) {
-        [self.framerateSelector removeSegmentAtIndex:2 animated:NO];
-    }
+    // This fork keeps 120 FPS selectable on 60 Hz displays to test higher-rate streaming.
 
     // Disable codec selector segments for unsupported codecs
 #if defined(__IPHONE_16_0) || defined(__TVOS_16_0)
