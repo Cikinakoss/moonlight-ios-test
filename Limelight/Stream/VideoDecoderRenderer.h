@@ -12,6 +12,8 @@
 
 #include "Limelight.h"
 
+FOUNDATION_EXPORT NSString* const MLAsyncVideoSubmissionDefaultsKey;
+
 @interface VideoDecoderRenderer : NSObject
 
 - (id)initWithView:(UIView*)view callbacks:(id<ConnectionCallbacks>)callbacks streamAspectRatio:(float)aspectRatio useFramePacing:(BOOL)useFramePacing;
@@ -20,6 +22,7 @@
 - (void)start;
 - (void)stop;
 - (void)setHdrMode:(BOOL)enabled;
+- (NSString*)getVideoSubmissionStats;
 
 - (int)submitDecodeBuffer:(unsigned char *)data length:(int)length bufferType:(int)bufferType decodeUnit:(PDECODE_UNIT)du;
 

@@ -9,6 +9,7 @@
 #import "SettingsViewController.h"
 #import "TemporarySettings.h"
 #import "DataManager.h"
+#import "VideoDecoderRenderer.h"
 
 #import <VideoToolbox/VideoToolbox.h>
 #import <AVFoundation/AVFoundation.h>
@@ -16,6 +17,7 @@
 @implementation SettingsViewController {
     NSInteger _bitrate;
     NSInteger _lastSelectedResolutionIndex;
+    UISegmentedControl* _asyncVideoSubmissionSelector;
 }
 
 @dynamic overrideUserInterfaceStyle;
@@ -254,6 +256,29 @@ BOOL isCustomResolution(CGSize res) {
     [self.bitrateSlider addTarget:self action:@selector(bitrateSliderMoved) forControlEvents:UIControlEventValueChanged];
     [self updateBitrateText];
     [self updateResolutionDisplayViewText];
+
+    // Keep this fork-only preference out of the shared Core Data settings schema.
+    CGRect referenceFrame = self.statsOverlaySelector.frame;
+    UILabel* asyncLabel = [[UILabel alloc] initWithFrame:CGRectMake(referenceFrame.origin.x,
+        CGRectGetMaxY(referenceFrame) + 12, referenceFrame.size.width, 24)];
+    asyncLabel.text = @"Async Video Submission (Experimental)";
+    asyncLabel.textColor = UIColor.whiteColor;
+    asyncLabel.font = [UIFont systemFontOfSize:17];
+    asyncLabel.adjustsFontSizeToFitWidth = YES;
+    [self.scrollView addSubview:asyncLabel];
+    _asyncVideoSubmissionSelector = [[UISegmentedControl alloc] initWithItems:@[@"Off", @"On"]];
+    _asyncVideoSubmissionSelector.frame = CGRectMake(referenceFrame.origin.x,
+        CGRectGetMaxY(asyncLabel.frame) + 5, referenceFrame.size.width, referenceFrame.size.height);
+    if (@available(iOS 17.0, tvOS 17.0, *)) {
+        _asyncVideoSubmissionSelector.selectedSegmentIndex =
+            [[NSUserDefaults standardUserDefaults] boolForKey:MLAsyncVideoSubmissionDefaultsKey] ? 1 : 0;
+    }
+    else {
+        asyncLabel.text = @"Async Video Submission (requires iOS 17+)";
+        _asyncVideoSubmissionSelector.selectedSegmentIndex = 0;
+        _asyncVideoSubmissionSelector.enabled = NO;
+    }
+    [self.scrollView addSubview:_asyncVideoSubmissionSelector];
 }
 
 - (void) touchModeChanged {
@@ -514,6 +539,8 @@ BOOL isCustomResolution(CGSize res) {
 }
 
 - (void) saveSettings {
+    [[NSUserDefaults standardUserDefaults] setBool:_asyncVideoSubmissionSelector.selectedSegmentIndex == 1
+                                          forKey:MLAsyncVideoSubmissionDefaultsKey];
     DataManager* dataMan = [[DataManager alloc] init];
     NSInteger framerate = [self getChosenFrameRate];
     NSInteger height = [self getChosenStreamHeight];

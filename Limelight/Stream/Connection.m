@@ -27,9 +27,14 @@
     char _appVersionString[32];
     char _gfeVersionString[32];
     char _rtspSessionUrl[128];
+    VideoDecoderRenderer* _renderer;
+    id<ConnectionCallbacks> _connectionCallbacks;
+    BOOL _terminationRequested; // Protected by connectionStateLock.
 }
 
 static NSLock* initLock;
+static NSLock* connectionStateLock;
+static Connection* activeConnection; // Protected by connectionStateLock.
 static OpusMSDecoder* opusDecoder;
 static id<ConnectionCallbacks> _callbacks;
 static int lastFrameNumber;
@@ -63,6 +68,11 @@ void DrStart(void)
 void DrStop(void)
 {
     [renderer stop];
+}
+
+-(NSString*) getVideoSubmissionStats
+{
+    return [_renderer getVideoSubmissionStats];
 }
 
 -(BOOL) getVideoStats:(video_stats_t*)stats
@@ -377,14 +387,27 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     // thread-safe and done outside initLock on purpose, since we
     // won't be able to acquire it if LiStartConnection is in
     // progress.
-    LiInterruptConnection();
+    [connectionStateLock lock];
+    _terminationRequested = YES;
+    if (activeConnection == self) {
+        LiInterruptConnection();
+    }
+    [connectionStateLock unlock];
     
     // We dispatch this async to get out because this can be invoked
     // on a thread inside common and we don't want to deadlock. It also avoids
     // blocking on the caller's thread waiting to acquire initLock.
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         [initLock lock];
-        LiStopConnection();
+        [connectionStateLock lock];
+        BOOL ownsConnection = activeConnection == self;
+        [connectionStateLock unlock];
+        if (ownsConnection) {
+            LiStopConnection();
+            [connectionStateLock lock];
+            activeConnection = nil;
+            [connectionStateLock unlock];
+        }
         [initLock unlock];
     });
 }
@@ -395,13 +418,12 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
 
     // Use a lock to ensure that only one thread is initializing
     // or deinitializing a connection at a time.
-    if (initLock == nil) {
+    static dispatch_once_t locksOnce;
+    dispatch_once(&locksOnce, ^{
         initLock = [[NSLock alloc] init];
-    }
-    
-    if (videoStatsLock == nil) {
+        connectionStateLock = [[NSLock alloc] init];
         videoStatsLock = [[NSLock alloc] init];
-    }
+    });
     
     NSString *rawAddress = [Utils addressPortStringToAddress:config.host];
     strncpy(_hostString,
@@ -432,8 +454,8 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     }
     _serverInfo.serverCodecModeSupport = config.serverCodecModeSupport;
 
-    renderer = myRenderer;
-    _callbacks = callbacks;
+    _renderer = myRenderer;
+    _connectionCallbacks = callbacks;
 
     LiInitializeStreamConfiguration(&_streamConfig);
     _streamConfig.width = config.width;
@@ -498,13 +520,31 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
 -(void) main
 {
     [initLock lock];
-    LiStartConnection(&_serverInfo,
-                      &_streamConfig,
-                      &_clCallbacks,
-                      &_drCallbacks,
-                      &_arCallbacks,
-                      NULL, 0,
-                      NULL, 0);
+    [connectionStateLock lock];
+    BOOL cancelled = _terminationRequested;
+    [connectionStateLock unlock];
+    if (!cancelled) {
+        // The core and its callbacks are global. Join the previous consumer
+        // before replacing its renderer, including during rapid reconnects.
+        LiStopConnection();
+        [connectionStateLock lock];
+        cancelled = _terminationRequested;
+        if (!cancelled) {
+            activeConnection = self;
+            renderer = _renderer;
+            _callbacks = _connectionCallbacks;
+        }
+        [connectionStateLock unlock];
+        if (!cancelled) {
+            LiStartConnection(&_serverInfo,
+                              &_streamConfig,
+                              &_clCallbacks,
+                              &_drCallbacks,
+                              &_arCallbacks,
+                              NULL, 0,
+                              NULL, 0);
+        }
+    }
     [initLock unlock];
 }
 

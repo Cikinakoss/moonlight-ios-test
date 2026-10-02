@@ -30,5 +30,6 @@ typedef struct {
 -(void) main;
 -(BOOL) getVideoStats:(video_stats_t*)stats;
 -(NSString*) getActiveCodecName;
+-(NSString*) getVideoSubmissionStats;
 
 @end

@@ -9,6 +9,8 @@
 #import "VideoDecoderRenderer.h"
 #import "StreamView.h"
 
+#include <stdatomic.h>
+
 #include <libavcodec/avcodec.h>
 #include <libavcodec/cbs.h>
 #include <libavcodec/cbs_av1.h>
@@ -18,6 +20,11 @@
 // Private libavformat API for writing the AV1 Codec Configuration Box
 extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
                               int write_seq_header);
+
+NSString* const MLAsyncVideoSubmissionDefaultsKey = @"ExperimentalAsyncVideoSubmission";
+
+// The connection's existing compressed-frame submission function.
+int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
 
 @implementation VideoDecoderRenderer {
     StreamView* _view;
@@ -35,6 +42,20 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
     
     CADisplayLink* _displayLink;
     BOOL framePacing;
+
+    // The mode is fixed for the renderer's lifetime. Only one path consumes frames.
+    BOOL _asyncSubmission;
+    AVSampleBufferVideoRenderer* _sampleBufferRenderer;
+    dispatch_queue_t _videoSubmitQueue;
+    dispatch_group_t _videoSubmitGroup;
+    NSLock* _decoderLock;
+    atomic_bool _stopping;
+    atomic_uint _submittedFrames;
+    atomic_uint _enqueuedFrames;
+    atomic_uint _backpressureDrops;
+    NSUInteger _displayCallbacks;
+    CFTimeInterval _lastStatisticsTime;
+    NSString* _submissionStatistics;
 }
 
 - (void)reinitializeDisplayLayer
@@ -42,6 +63,9 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
     CALayer *oldLayer = displayLayer;
     
     displayLayer = [[AVSampleBufferDisplayLayer alloc] init];
+    if (@available(iOS 17.0, tvOS 17.0, *)) {
+        _sampleBufferRenderer = displayLayer.sampleBufferRenderer;
+    }
     displayLayer.backgroundColor = [UIColor blackColor].CGColor;
     
     // Ensure the AVSampleBufferDisplayLayer is sized to preserve the aspect ratio
@@ -85,6 +109,19 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
     _callbacks = callbacks;
     _streamAspectRatio = aspectRatio;
     framePacing = useFramePacing;
+
+    // Unlike CALayer mutations, this iOS 17+ API explicitly supports background enqueueing.
+    if (@available(iOS 17.0, tvOS 17.0, *)) {
+        _asyncSubmission = [[NSUserDefaults standardUserDefaults] boolForKey:MLAsyncVideoSubmissionDefaultsKey];
+    }
+    _decoderLock = [[NSLock alloc] init];
+    atomic_init(&_stopping, true);
+    atomic_init(&_submittedFrames, 0);
+    atomic_init(&_enqueuedFrames, 0);
+    atomic_init(&_backpressureDrops, 0);
+    _videoSubmitGroup = dispatch_group_create();
+    _videoSubmitQueue = dispatch_queue_create("com.moonlight.video-submit",
+        dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
     
     parameterSetBuffers = [[NSMutableArray alloc] init];
     
@@ -101,26 +138,114 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
 
 - (void)start
 {
-    _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayLinkCallback:)];
-    if (@available(iOS 15.0, tvOS 15.0, *)) {
-        _displayLink.preferredFrameRateRange = CAFrameRateRangeMake(self->frameRate, self->frameRate, self->frameRate);
+    if (!atomic_exchange(&_stopping, false)) {
+        return;
     }
-    else {
-        _displayLink.preferredFramesPerSecond = self->frameRate;
+    [self performOnMainThread:^{
+        self->_displayCallbacks = 0;
+        self->_lastStatisticsTime = CACurrentMediaTime();
+        atomic_store(&self->_submittedFrames, 0);
+        atomic_store(&self->_enqueuedFrames, 0);
+        atomic_store(&self->_backpressureDrops, 0);
+        @synchronized (self) {
+            self->_submissionStatistics = [NSString stringWithFormat:@"Requested: %d FPS; submission: %@",
+                self->frameRate, self->_asyncSubmission ? @"Async" : @"Display link"];
+        }
+        self->_displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(displayLinkCallback:)];
+        if (@available(iOS 15.0, tvOS 15.0, *)) {
+            self->_displayLink.preferredFrameRateRange = CAFrameRateRangeMake(self->frameRate, self->frameRate, self->frameRate);
+        }
+        else {
+            self->_displayLink.preferredFramesPerSecond = self->frameRate;
+        }
+        [self->_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+    }];
+    Log(LOG_I, @"Stream FPS configured: %d; async video submission: %@", frameRate, _asyncSubmission ? @"ON" : @"OFF");
+
+    if (_asyncSubmission) {
+        dispatch_group_async(_videoSubmitGroup, _videoSubmitQueue, ^{
+            // Wait uses the core's condition variable. No timer, sleep, or spin loop.
+            while (!atomic_load(&self->_stopping)) {
+                VIDEO_FRAME_HANDLE handle;
+                PDECODE_UNIT du;
+                if (!LiWaitForNextVideoFrame(&handle, &du)) {
+                    break;
+                }
+                @autoreleasepool {
+                    // A frame acquired during shutdown still needs exactly one completion.
+                    int status = atomic_load(&self->_stopping) ? DR_OK : [self submitVideoFrame:du];
+                    LiCompleteVideoFrame(handle, status);
+                }
+            }
+        });
     }
-    [_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
 }
 
-// TODO: Refactor this
-int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
+- (void)performOnMainThread:(dispatch_block_t)block
+{
+    if ([NSThread isMainThread]) {
+        block();
+    }
+    else {
+        dispatch_sync(dispatch_get_main_queue(), block);
+    }
+}
+
+- (int)submitVideoFrame:(PDECODE_UNIT)du
+{
+    // HDR updates arrive on a core thread. Serialize metadata with frame construction.
+    [_decoderLock lock];
+    int status = DrSubmitDecodeUnit(du);
+    [_decoderLock unlock];
+    atomic_fetch_add(&_submittedFrames, 1);
+    return status;
+}
+
+- (NSString*)getVideoSubmissionStats
+{
+    @synchronized (self) {
+        return _submissionStatistics ?: @"";
+    }
+}
+
+- (void)updateSubmissionStatistics
+{
+    CFTimeInterval now = CACurrentMediaTime();
+    double interval = now - _lastStatisticsTime;
+    if (interval < 1.0) {
+        return;
+    }
+    double submitted = atomic_exchange(&_submittedFrames, 0) / interval;
+    double enqueued = atomic_exchange(&_enqueuedFrames, 0) / interval;
+    unsigned int backpressure = atomic_exchange(&_backpressureDrops, 0);
+    double callbacks = _displayCallbacks / interval;
+    @synchronized (self) {
+        _submissionStatistics = [NSString stringWithFormat:
+            @"Requested: %d FPS; submission: %@\nSubmitted/enqueued: %.1f/%.1f FPS; display callbacks: %.1f/s\nRenderer backpressure drops: %u",
+            frameRate, _asyncSubmission ? @"Async" : @"Display link", submitted, enqueued, callbacks, backpressure];
+    }
+    Log(LOG_I, @"Video submission (%@): requested=%d FPS, submitted=%.1f/s, enqueued=%.1f/s, display callbacks=%.1f/s, backpressure drops=%u",
+        _asyncSubmission ? @"Async" : @"Display link", frameRate, submitted, enqueued, callbacks, backpressure);
+    _displayCallbacks = 0;
+    _lastStatisticsTime = now;
+}
 
 - (void)displayLinkCallback:(CADisplayLink *)sender
 {
+    if (atomic_load(&_stopping)) {
+        return;
+    }
+    _displayCallbacks++;
+    [self updateSubmissionStatistics];
+    if (_asyncSubmission) {
+        // Keep the display link for measurement, never consume frames in this mode.
+        return;
+    }
     VIDEO_FRAME_HANDLE handle;
     PDECODE_UNIT du;
     
-    while (LiPollNextVideoFrame(&handle, &du)) {
-        LiCompleteVideoFrame(handle, DrSubmitDecodeUnit(du));
+    while (!atomic_load(&_stopping) && LiPollNextVideoFrame(&handle, &du)) {
+        LiCompleteVideoFrame(handle, [self submitVideoFrame:du]);
         
         if (framePacing) {
             // Calculate the actual display refresh rate
@@ -142,7 +267,22 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
 
 - (void)stop
 {
-    [_displayLink invalidate];
+    if (atomic_exchange(&_stopping, true)) {
+        return;
+    }
+    if (_asyncSubmission) {
+        // DrStop is called by the core on the connection/termination operation,
+        // never the main thread. The main queue stays free for layer recovery.
+        NSAssert(![NSThread isMainThread], @"Async video shutdown must run off the main thread");
+        LiWakeWaitForVideoFrame();
+        dispatch_group_wait(_videoSubmitGroup, DISPATCH_TIME_FOREVER);
+    }
+    // Stop returns only after the consumer and its main-thread layer work finish.
+    // The core calls DrStop BEFORE shutting down/destroying its decode-unit queue.
+    [self performOnMainThread:^{
+        [self->_displayLink invalidate];
+        self->_displayLink = nil;
+    }];
 }
 
 #define NALU_START_PREFIX_SIZE 3
@@ -516,16 +656,40 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     }
     
     // Check for previous decoder errors before doing anything
-    if (displayLayer.status == AVQueuedSampleBufferRenderingStatusFailed) {
-        Log(LOG_E, @"Display layer rendering failed: %@", displayLayer.error);
+    AVQueuedSampleBufferRenderingStatus renderingStatus = AVQueuedSampleBufferRenderingStatusUnknown;
+    NSError* renderingError = nil;
+    if (_asyncSubmission) {
+        if (@available(iOS 17.0, tvOS 17.0, *)) {
+            renderingStatus = _sampleBufferRenderer.status;
+            renderingError = _sampleBufferRenderer.error;
+        }
+    }
+    else {
+        renderingStatus = displayLayer.status;
+        renderingError = displayLayer.error;
+    }
+    if (renderingStatus == AVQueuedSampleBufferRenderingStatusFailed) {
+        Log(LOG_E, @"Display layer rendering failed: %@", renderingError);
         
-        // Recreate the display layer. We are already on the main thread,
-        // so this is safe to do right here.
-        [self reinitializeDisplayLayer];
+        // Layer-tree and view changes stay on the main thread. The sole submitter
+        // waits for recreation, so the old renderer cannot receive another sample.
+        [self performOnMainThread:^{ [self reinitializeDisplayLayer]; }];
         
         // Request an IDR frame to initialize the new decoder
         free(data);
         return DR_NEED_IDR;
+    }
+
+    if (_asyncSubmission) {
+        if (@available(iOS 17.0, tvOS 17.0, *)) {
+            if (!_sampleBufferRenderer.readyForMoreMediaData) {
+                // Never build an unbounded AVFoundation queue. Dropping compressed
+                // reference frames needs the core's existing IDR recovery path.
+                atomic_fetch_add(&_backpressureDrops, 1);
+                free(data);
+                return DR_NEED_IDR;
+            }
+        }
     }
     
     // Now we're decoding actual frame data here
@@ -595,14 +759,23 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     }
 
     // Enqueue the next frame
-    [self->displayLayer enqueueSampleBuffer:sampleBuffer];
+    if (_asyncSubmission) {
+        if (@available(iOS 17.0, tvOS 17.0, *)) {
+            [_sampleBufferRenderer enqueueSampleBuffer:sampleBuffer];
+        }
+    }
+    else {
+        [displayLayer enqueueSampleBuffer:sampleBuffer];
+    }
+    atomic_fetch_add(&_enqueuedFrames, 1);
     
     if (du->frameType == FRAME_TYPE_IDR) {
         // Ensure the layer is visible now
-        self->displayLayer.hidden = NO;
-        
-        // Tell our parent VC to hide the progress indicator
-        [self->_callbacks videoContentShown];
+        [self performOnMainThread:^{
+            self->displayLayer.hidden = NO;
+            // Tell our parent VC to hide the progress indicator.
+            [self->_callbacks videoContentShown];
+        }];
     }
     
     // Dereference the buffers
@@ -614,6 +787,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
 }
 
 - (void)setHdrMode:(BOOL)enabled {
+    [_decoderLock lock];
     SS_HDR_METADATA hdrMetadata;
     
     BOOL hasMetadata = enabled && LiGetHdrMetadata(&hdrMetadata);
@@ -679,6 +853,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     if (metadataChanged) {
         LiRequestIdrFrame();
     }
+    [_decoderLock unlock];
 }
 
 @end
