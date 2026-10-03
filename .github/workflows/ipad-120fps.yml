@@ -67,6 +67,25 @@ jobs:
             "$common/src/LinkedBlockingQueue.c" -o "$RUNNER_TEMP/gamepad-tests"
           "$RUNNER_TEMP/gamepad-tests"
 
+      - name: Test cancellation during stream startup
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          for source, output in (
+              ('Connection.h', 'connection-under-test.inc'),
+              ('StreamManager.h', 'stream-manager-header-under-test.inc'),
+              ('StreamManager.m', 'stream-manager-under-test.inc'),
+          ):
+              lines = (Path('Limelight/Stream') / source).read_text().splitlines()
+              body = '\n'.join(line for line in lines if not line.lstrip().startswith(('#import ', '#include ')))
+              (Path(os.environ['RUNNER_TEMP']) / output).write_text(body + '\n')
+          PY
+          xcrun --sdk macosx clang -fobjc-arc -fblocks -g -fsanitize=address \
+            -I "$RUNNER_TEMP" -framework Foundation \
+            Tests/stream-manager-tests.m -o "$RUNNER_TEMP/stream-manager-tests"
+          "$RUNNER_TEMP/stream-manager-tests"
+
       - name: Package unsigned IPA
         run: |
           app="$RUNNER_TEMP/MoonlightBuild/Build/Products/Release-iphoneos/Moonlight.app"

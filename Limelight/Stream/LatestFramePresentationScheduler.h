@@ -10,3 +10,16 @@
 // Caller must be off the presentation queue and leave the main queue free.
 - (void)stop;
 @end
+
+// AVSampleBufferVideoRenderer implements these public readiness methods.
+@protocol LatestFrameReadinessSource <NSObject>
+- (void)requestMediaDataWhenReadyOnQueue:(dispatch_queue_t)queue usingBlock:(dispatch_block_t)block;
+- (void)stopRequestingMediaData;
+@end
+
+// All methods and the readiness callback run on the presentation queue.
+@interface LatestFrameReadinessRetry : NSObject
+- (id)initWithQueue:(dispatch_queue_t)queue handler:(dispatch_block_t)handler;
+- (void)waitForRenderer:(id<LatestFrameReadinessSource>)renderer;
+- (void)cancel;
+@end

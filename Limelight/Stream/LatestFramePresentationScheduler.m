@@ -63,7 +63,7 @@
         @autoreleasepool {
             _handler();
         }
-        // Only an output arriving during this pass requests another pass. No spin
+        // Only a request arriving during this pass requests another pass. No spin
         // waiting for readiness, no frame FIFO, and no block dispatched per frame.
     }
 }
@@ -89,5 +89,43 @@
     _requests = _coalesced = _passes = 0;
     [_lock unlock];
     return stats;
+}
+@end
+
+@implementation LatestFrameReadinessRetry {
+    dispatch_queue_t _queue;
+    dispatch_block_t _handler;
+    id<LatestFrameReadinessSource> _renderer;
+    NSObject* _token;
+}
+
+- (id)initWithQueue:(dispatch_queue_t)queue handler:(dispatch_block_t)handler {
+    self = [super init];
+    _queue = queue;
+    _handler = [handler copy];
+    return self;
+}
+
+- (void)waitForRenderer:(id<LatestFrameReadinessSource>)renderer {
+    if (_renderer == renderer) { return; }
+    [self cancel];
+    _renderer = renderer;
+    NSObject* token = _token = [[NSObject alloc] init];
+    __weak LatestFrameReadinessRetry* weakSelf = self;
+    [renderer requestMediaDataWhenReadyOnQueue:_queue usingBlock:^{
+        LatestFrameReadinessRetry* retry = weakSelf;
+        if (!retry || retry->_token != token) { return; }
+        // One-shot: cancel before signaling, so a ready/empty renderer cannot
+        // repeatedly call us. The coalescer still owns every presentation pass.
+        [retry cancel];
+        retry->_handler();
+    }];
+}
+
+- (void)cancel {
+    id<LatestFrameReadinessSource> renderer = _renderer;
+    _renderer = nil;
+    _token = nil; // Already queued callbacks cannot cancel a newer registration.
+    [renderer stopRequestingMediaData];
 }
 @end

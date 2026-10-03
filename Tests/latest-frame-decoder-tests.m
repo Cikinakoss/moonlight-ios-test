@@ -146,6 +146,72 @@ static void testPresentationSchedulerLifecycle(void) {
     }
 }
 
+@interface TestReadinessSource : NSObject <LatestFrameReadinessSource>
+@property BOOL ready;
+@property int registrations;
+@property int cancellations;
+@property (copy) dispatch_block_t callback;
+@end
+@implementation TestReadinessSource
+- (void)requestMediaDataWhenReadyOnQueue:(dispatch_queue_t)queue usingBlock:(dispatch_block_t)block {
+    self.registrations++;
+    self.callback = block;
+}
+- (void)stopRequestingMediaData {
+    self.cancellations++;
+    self.callback = nil;
+}
+@end
+
+static void testReadinessRetry(void) {
+    dispatch_queue_t queue = dispatch_queue_create("test.readiness-retry", DISPATCH_QUEUE_SERIAL);
+    LatestFrameDecoder* decoder = [[LatestFrameDecoder alloc] init];
+    TestReadinessSource* source = [[TestReadinessSource alloc] init];
+    __block LatestFrameReadinessRetry* retry;
+    __block int enqueues = 0;
+    LatestFramePresentationScheduler* scheduler = [[LatestFramePresentationScheduler alloc] initWithQueue:queue handler:^{
+        if (!source.ready) { [retry waitForRenderer:source]; return; }
+        [retry cancel];
+        CMSampleBufferRef sample = [decoder copyPresentationSampleAtTime:CACurrentMediaTime()];
+        CHECK(sample != NULL);
+        enqueues++;
+        CFRelease(sample);
+    }];
+    retry = [[LatestFrameReadinessRetry alloc] initWithQueue:queue handler:^{ [scheduler requestPresentation]; }];
+    [scheduler start];
+    CVPixelBufferRef image = createImage();
+    output(decoder, image, 100, 1);
+    [scheduler requestPresentation];
+    dispatch_sync(queue, ^{});
+    CHECK(enqueues == 0 && source.registrations == 1);
+    dispatch_sync(queue, ^{
+        [retry waitForRenderer:source];
+        CHECK(source.registrations == 1); // No duplicate readiness subscription.
+        source.ready = YES;
+        source.callback(); // Readiness alone, with no new decoded frame.
+    });
+    dispatch_sync(queue, ^{});
+    CHECK(enqueues == 1 && source.callback == nil);
+    dispatch_sync(queue, ^{
+        source.ready = NO;
+        [retry waitForRenderer:source];
+        dispatch_block_t oldCallback = source.callback;
+        [retry cancel];
+        [retry waitForRenderer:source];
+        dispatch_block_t newCallback = source.callback;
+        oldCallback();
+        CHECK(source.callback == newCallback); // Old callback cannot cancel new registration.
+        [scheduler cancel];
+        [retry cancel];
+        newCallback(); // A queued callback after teardown must be inert.
+    });
+    [scheduler stop];
+    CHECK(enqueues == 1 && source.registrations == source.cancellations);
+    retry = nil; // Break the test's intentional handler capture before releasing owners.
+    [decoder stop];
+    CVPixelBufferRelease(image);
+}
+
 int main(void) {
     @autoreleasepool {
         atomic_init(&releasedImages, 0);
@@ -262,6 +328,7 @@ int main(void) {
         CHECK(idrRequests == 1);
         testImmediatePresentation();
         testPresentationSchedulerLifecycle();
+        testReadinessRetry();
         NSLog(@"Latest-frame tests passed: mailbox ownership/ordering, coalesced presentation, stale candidates, distinct ages, concurrency, cancellation, restart and recovery.");
     }
     return 0;

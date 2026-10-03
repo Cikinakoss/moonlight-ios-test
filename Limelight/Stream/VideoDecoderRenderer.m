@@ -55,6 +55,8 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     BOOL _immediateLatestPresentation;
     LatestFrameDecoder* _latestDecoder;
     LatestFramePresentationScheduler* _latestPresentationScheduler;
+    dispatch_queue_t _latestPresentationQueue;
+    LatestFrameReadinessRetry* _latestReadinessRetry;
     BOOL _immediateLayerShown; // Owned by the serial presentation queue.
     NSUInteger _syncPresentationRequests; // Main thread only.
     double _displayIntervalTotal;
@@ -139,9 +141,16 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         if (_immediateLatestPresentation) {
             dispatch_queue_t presentationQueue = dispatch_queue_create("com.moonlight.latest-presentation",
                 dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INTERACTIVE, 0));
+            _latestPresentationQueue = presentationQueue;
             __weak VideoDecoderRenderer* weakSelf = self;
             _latestPresentationScheduler = [[LatestFramePresentationScheduler alloc] initWithQueue:presentationQueue
                 handler:^{ [weakSelf presentLatestDecodedFrameImmediately]; }];
+            _latestReadinessRetry = [[LatestFrameReadinessRetry alloc] initWithQueue:presentationQueue handler:^{
+                VideoDecoderRenderer* renderer = weakSelf;
+                if (renderer && !atomic_load(&renderer->_stopping)) {
+                    [renderer->_latestPresentationScheduler requestPresentation];
+                }
+            }];
         }
         // This mode always decodes asynchronously and supersedes both old toggles.
         _asyncSubmission = YES;
@@ -390,6 +399,9 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         // Close/drain presentation before decoder teardown. Callbacks can only
         // signal the closed coalescer, and the main queue stays free for its work.
         [_latestPresentationScheduler stop];
+        if (_latestPresentationQueue) {
+            dispatch_sync(_latestPresentationQueue, ^{ [self->_latestReadinessRetry cancel]; });
+        }
         // No further compressed submissions; drain callbacks before releasing the slot.
         [_latestDecoder stop];
         [_decoderLock lock];
@@ -448,6 +460,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     if (@available(iOS 17.0, tvOS 17.0, *)) {
         AVSampleBufferVideoRenderer* renderer = _sampleBufferRenderer;
         if (renderer.status == AVQueuedSampleBufferRenderingStatusFailed) {
+            [_latestReadinessRetry cancel];
             Log(LOG_E, @"Immediate latest-frame renderer failed: %@", renderer.error);
             [self performOnMainThread:^{
                 if (!atomic_load(&self->_stopping)) { [self reinitializeDisplayLayer]; }
@@ -459,11 +472,13 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         BOOL ready = renderer.readyForMoreMediaData;
         atomic_store(&_rendererReady, ready);
         if (!ready) {
-            // Keep the slot replaceable. A new decoded output requests a retry;
-            // do not spin, queue frame payloads, or gate retries on CADisplayLink.
+            // Keep the slot replaceable and arm a one-shot readiness notification.
+            // This can retry during a network pause without a display-link gate.
             atomic_fetch_add(&_backpressureDrops, 1);
+            [_latestReadinessRetry waitForRenderer:(id<LatestFrameReadinessSource>)renderer];
             return;
         }
+        [_latestReadinessRetry cancel];
         CFTimeInterval selectedAt = CACurrentMediaTime();
         CFTimeInterval decodedAt = 0;
         uint64_t sequence = 0, generation = 0;

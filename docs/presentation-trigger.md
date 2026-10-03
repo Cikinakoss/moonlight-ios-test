@@ -55,11 +55,13 @@ and first-image visibility remain on the main thread. Only startup/recovery
 needs synchronous main work, and VT callbacks continue coalescing while the
 presentation worker waits. No per-frame main-queue block is added.
 
-If the renderer is not ready, the worker leaves the slot replaceable and exits.
-Another accepted decoded output requests another attempt. This does not poll,
-sleep, drop compressed references or use CADisplayLink to retry. If no further
-outputs arrive while backpressured, the slot waits for another accepted output;
-there is no independent readiness callback in this experiment.
+If the renderer is not ready, the worker leaves the slot replaceable and arms
+a one-shot requestMediaDataWhenReady callback on the same serial queue. Readiness
+recovery cancels that subscription before signaling the existing coalescer, so
+even a final frame or network pause can recover without new decoded output.
+Accepted outputs also request attempts. Success, layer replacement and shutdown
+cancel the subscription; tokens reject callbacks queued by an older registration.
+No polling, sleep, compressed-reference dropping or display-link retry is used.
 
 CADisplayLink remains active for aggregate statistics, callback rate and timing
 observations in Immediate. It never selects or enqueues a decoded image there.
@@ -97,7 +99,7 @@ The overlay/log identifies the trigger and reports roughly once per second:
 - Compressed submissions and decoded/asynchronous outputs per second.
 - Presentation requests and completed API enqueues per second. Display Sync
   counts one attempt per display callback, including an empty/not-ready slot;
-  Immediate counts accepted-output requests, including those coalesced.
+  Immediate counts accepted-output and readiness-retry requests, including those coalesced.
 - Overwritten pending images, coalesced requests, late decoder rejects and
   selected candidates superseded before Immediate enqueue, per second.
 - Latest slot depth (0/1), outstanding presentation worker/request depth (0/1),
