@@ -9,8 +9,7 @@
 #import "SettingsViewController.h"
 #import "TemporarySettings.h"
 #import "DataManager.h"
-#import "ControllerSupport.h"
-#import "VideoDecoderRenderer.h"
+#import "../Stream/LowLatencySettings.h"
 
 #import <VideoToolbox/VideoToolbox.h>
 #import <AVFoundation/AVFoundation.h>
@@ -18,11 +17,7 @@
 @implementation SettingsViewController {
     NSInteger _bitrate;
     NSInteger _lastSelectedResolutionIndex;
-    UISegmentedControl* _asyncVideoSubmissionSelector;
-    UISegmentedControl* _immediatePresentationSelector;
-    UISegmentedControl* _latestDecodedFrameSelector;
-    UISegmentedControl* _presentationTriggerSelector;
-    UISegmentedControl* _snappyGamepadInputSelector;
+    UISegmentedControl* _lowLatencyPresetSelector;
 }
 
 @dynamic overrideUserInterfaceStyle;
@@ -262,104 +257,28 @@ BOOL isCustomResolution(CGSize res) {
     [self updateBitrateText];
     [self updateResolutionDisplayViewText];
 
-    // Keep this fork-only preference out of the shared Core Data settings schema.
+    // Keep the fork preset outside the shared Core Data settings schema.
     CGRect referenceFrame = self.statsOverlaySelector.frame;
-    UILabel* asyncLabel = [[UILabel alloc] initWithFrame:CGRectMake(referenceFrame.origin.x,
+    UILabel* label = [[UILabel alloc] initWithFrame:CGRectMake(referenceFrame.origin.x,
         CGRectGetMaxY(referenceFrame) + 12, referenceFrame.size.width, 24)];
-    asyncLabel.text = @"Async Video Submission (Experimental)";
-    asyncLabel.textColor = UIColor.whiteColor;
-    asyncLabel.font = [UIFont systemFontOfSize:17];
-    asyncLabel.adjustsFontSizeToFitWidth = YES;
-    [self.scrollView addSubview:asyncLabel];
-    _asyncVideoSubmissionSelector = [[UISegmentedControl alloc] initWithItems:@[@"Off", @"On"]];
-    _asyncVideoSubmissionSelector.frame = CGRectMake(referenceFrame.origin.x,
-        CGRectGetMaxY(asyncLabel.frame) + 5, referenceFrame.size.width, referenceFrame.size.height);
-    if (@available(iOS 17.0, tvOS 17.0, *)) {
-        _asyncVideoSubmissionSelector.selectedSegmentIndex =
-            [[NSUserDefaults standardUserDefaults] boolForKey:MLAsyncVideoSubmissionDefaultsKey] ? 1 : 0;
-    }
-    else {
-        asyncLabel.text = @"Async Video Submission (requires iOS 17+)";
-        _asyncVideoSubmissionSelector.selectedSegmentIndex = 0;
-        _asyncVideoSubmissionSelector.enabled = NO;
-    }
-    [self.scrollView addSubview:_asyncVideoSubmissionSelector];
-
-    UILabel* immediateLabel = [[UILabel alloc] initWithFrame:CGRectMake(referenceFrame.origin.x,
-        CGRectGetMaxY(_asyncVideoSubmissionSelector.frame) + 12, referenceFrame.size.width, 24)];
-    immediateLabel.text = @"Immediate Latest-Frame Presentation (Experimental)";
-    immediateLabel.textColor = UIColor.whiteColor;
-    immediateLabel.font = [UIFont systemFontOfSize:17];
-    immediateLabel.adjustsFontSizeToFitWidth = YES;
-    [self.scrollView addSubview:immediateLabel];
-    _immediatePresentationSelector = [[UISegmentedControl alloc] initWithItems:@[@"Off", @"On"]];
-    _immediatePresentationSelector.frame = CGRectMake(referenceFrame.origin.x,
-        CGRectGetMaxY(immediateLabel.frame) + 5, referenceFrame.size.width, referenceFrame.size.height);
-    _immediatePresentationSelector.selectedSegmentIndex =
-        [[NSUserDefaults standardUserDefaults] boolForKey:MLImmediatePresentationDefaultsKey] ? 1 : 0;
-    [self.scrollView addSubview:_immediatePresentationSelector];
-
-    UILabel* latestLabel = [[UILabel alloc] initWithFrame:CGRectMake(referenceFrame.origin.x,
-        CGRectGetMaxY(_immediatePresentationSelector.frame) + 12, referenceFrame.size.width, 24)];
-    latestLabel.text = @"Latest Decoded Frame (Experimental)";
-    latestLabel.textColor = UIColor.whiteColor;
-    latestLabel.font = [UIFont systemFontOfSize:17];
-    latestLabel.adjustsFontSizeToFitWidth = YES;
-    [self.scrollView addSubview:latestLabel];
-    _latestDecodedFrameSelector = [[UISegmentedControl alloc] initWithItems:@[@"Off", @"On"]];
-    _latestDecodedFrameSelector.frame = CGRectMake(referenceFrame.origin.x,
-        CGRectGetMaxY(latestLabel.frame) + 5, referenceFrame.size.width, referenceFrame.size.height);
-    _latestDecodedFrameSelector.selectedSegmentIndex =
-        [[NSUserDefaults standardUserDefaults] boolForKey:MLLatestDecodedFrameDefaultsKey] ? 1 : 0;
-    if (@available(iOS 17.0, tvOS 17.0, *)) {
-        // The mode requires public hardware-decoder selection available on 17+.
-    }
-    else {
-        latestLabel.text = @"Latest Decoded Frame (requires iOS 17)";
-        _latestDecodedFrameSelector.enabled = NO;
-        _latestDecodedFrameSelector.selectedSegmentIndex = 0;
-    }
-    [self.scrollView addSubview:_latestDecodedFrameSelector];
-
-    UILabel* triggerLabel = [[UILabel alloc] initWithFrame:CGRectMake(referenceFrame.origin.x,
-        CGRectGetMaxY(_latestDecodedFrameSelector.frame) + 12, referenceFrame.size.width, 24)];
-    triggerLabel.text = @"Presentation Trigger";
-    triggerLabel.textColor = UIColor.whiteColor;
-    triggerLabel.font = [UIFont systemFontOfSize:17];
-    [self.scrollView addSubview:triggerLabel];
-    _presentationTriggerSelector = [[UISegmentedControl alloc] initWithItems:@[@"Display Sync", @"Immediate"]];
-    _presentationTriggerSelector.frame = CGRectMake(referenceFrame.origin.x,
-        CGRectGetMaxY(triggerLabel.frame) + 5, referenceFrame.size.width, referenceFrame.size.height);
-    _presentationTriggerSelector.selectedSegmentIndex =
-        [[NSUserDefaults standardUserDefaults] boolForKey:MLLatestPresentationImmediateDefaultsKey] ? 1 : 0;
-    [self.scrollView addSubview:_presentationTriggerSelector];
-    [_latestDecodedFrameSelector addTarget:self action:@selector(latestDecodedFrameChanged) forControlEvents:UIControlEventValueChanged];
-    [self latestDecodedFrameChanged];
-
-    UILabel* gamepadLabel = [[UILabel alloc] initWithFrame:CGRectMake(referenceFrame.origin.x,
-        CGRectGetMaxY(_presentationTriggerSelector.frame) + 12, referenceFrame.size.width, 24)];
-    gamepadLabel.text = @"Snappy Gamepad Input (Experimental)";
-    gamepadLabel.textColor = UIColor.whiteColor;
-    gamepadLabel.font = [UIFont systemFontOfSize:17];
-    gamepadLabel.adjustsFontSizeToFitWidth = YES;
-    [self.scrollView addSubview:gamepadLabel];
-    _snappyGamepadInputSelector = [[UISegmentedControl alloc] initWithItems:@[@"Off", @"On"]];
-    _snappyGamepadInputSelector.frame = CGRectMake(referenceFrame.origin.x,
-        CGRectGetMaxY(gamepadLabel.frame) + 5, referenceFrame.size.width, referenceFrame.size.height);
-    _snappyGamepadInputSelector.selectedSegmentIndex =
-        [[NSUserDefaults standardUserDefaults] boolForKey:MLSnappyGamepadInputDefaultsKey] ? 1 : 0;
-    [self.scrollView addSubview:_snappyGamepadInputSelector];
-    UILabel* gamepadDescription = [[UILabel alloc] initWithFrame:CGRectMake(referenceFrame.origin.x,
-        CGRectGetMaxY(_snappyGamepadInputSelector.frame) + 5, referenceFrame.size.width, 64)];
-    gamepadDescription.text = @"Reduces gamepad input queueing and sends fresh controller state more aggressively. Reconnect after changing.";
-    gamepadDescription.textColor = UIColor.whiteColor;
-    gamepadDescription.font = [UIFont systemFontOfSize:13];
-    gamepadDescription.numberOfLines = 0;
-    [self.scrollView addSubview:gamepadDescription];
-}
-
-- (void)latestDecodedFrameChanged {
-    _presentationTriggerSelector.enabled = _latestDecodedFrameSelector.enabled && _latestDecodedFrameSelector.selectedSegmentIndex == 1;
+    label.text = @"Low Latency (Experimental)";
+    label.textColor = UIColor.whiteColor;
+    label.font = [UIFont systemFontOfSize:17];
+    label.adjustsFontSizeToFitWidth = YES;
+    [self.scrollView addSubview:label];
+    _lowLatencyPresetSelector = [[UISegmentedControl alloc] initWithItems:@[@"Off", @"On"]];
+    _lowLatencyPresetSelector.frame = CGRectMake(referenceFrame.origin.x,
+        CGRectGetMaxY(label.frame) + 5, referenceFrame.size.width, referenceFrame.size.height);
+    _lowLatencyPresetSelector.selectedSegmentIndex = MLLowLatencyPresetEnabled([NSUserDefaults standardUserDefaults]) ? 1 : 0;
+    _lowLatencyPresetSelector.enabled = MLLowLatencyPresetAvailable();
+    [self.scrollView addSubview:_lowLatencyPresetSelector];
+    UILabel* description = [[UILabel alloc] initWithFrame:CGRectMake(referenceFrame.origin.x,
+        CGRectGetMaxY(_lowLatencyPresetSelector.frame) + 5, referenceFrame.size.width, 72)];
+    description.text = @"Presents the newest decoded frame promptly and reduces physical gamepad input queueing. Requires iOS 17+. Reconnect after changing. Frame rate is selected separately.";
+    description.textColor = UIColor.whiteColor;
+    description.font = [UIFont systemFontOfSize:13];
+    description.numberOfLines = 0;
+    [self.scrollView addSubview:description];
 }
 
 - (void) touchModeChanged {
@@ -620,16 +539,7 @@ BOOL isCustomResolution(CGSize res) {
 }
 
 - (void) saveSettings {
-    [[NSUserDefaults standardUserDefaults] setBool:_snappyGamepadInputSelector.selectedSegmentIndex == 1
-                                          forKey:MLSnappyGamepadInputDefaultsKey];
-    [[NSUserDefaults standardUserDefaults] setBool:_asyncVideoSubmissionSelector.selectedSegmentIndex == 1
-                                          forKey:MLAsyncVideoSubmissionDefaultsKey];
-    [[NSUserDefaults standardUserDefaults] setBool:_immediatePresentationSelector.selectedSegmentIndex == 1
-                                          forKey:MLImmediatePresentationDefaultsKey];
-    [[NSUserDefaults standardUserDefaults] setBool:_latestDecodedFrameSelector.selectedSegmentIndex == 1
-                                          forKey:MLLatestDecodedFrameDefaultsKey];
-    [[NSUserDefaults standardUserDefaults] setBool:_presentationTriggerSelector.selectedSegmentIndex == 1
-                                          forKey:MLLatestPresentationImmediateDefaultsKey];
+    MLSetLowLatencyPreset([NSUserDefaults standardUserDefaults], _lowLatencyPresetSelector.selectedSegmentIndex == 1);
     DataManager* dataMan = [[DataManager alloc] init];
     NSInteger framerate = [self getChosenFrameRate];
     NSInteger height = [self getChosenStreamHeight];

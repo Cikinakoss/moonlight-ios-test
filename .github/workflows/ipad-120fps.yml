@@ -67,6 +67,13 @@ jobs:
             "$common/src/LinkedBlockingQueue.c" -o "$RUNNER_TEMP/gamepad-tests"
           "$RUNNER_TEMP/gamepad-tests"
 
+      - name: Test Low Latency preference migration
+        run: |
+          xcrun --sdk macosx clang -fobjc-arc -g -fsanitize=address \
+            -framework Foundation Tests/low-latency-settings-tests.m \
+            -o "$RUNNER_TEMP/low-latency-settings-tests"
+          "$RUNNER_TEMP/low-latency-settings-tests"
+
       - name: Test cancellation during stream startup
         run: |
           python3 - <<'PY'

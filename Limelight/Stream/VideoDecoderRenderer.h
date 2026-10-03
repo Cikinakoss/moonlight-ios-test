@@ -12,14 +12,9 @@
 
 #include "Limelight.h"
 
-FOUNDATION_EXPORT NSString* const MLAsyncVideoSubmissionDefaultsKey;
-FOUNDATION_EXPORT NSString* const MLImmediatePresentationDefaultsKey;
-FOUNDATION_EXPORT NSString* const MLLatestDecodedFrameDefaultsKey;
-FOUNDATION_EXPORT NSString* const MLLatestPresentationImmediateDefaultsKey;
-
 @interface VideoDecoderRenderer : NSObject
 
-- (id)initWithView:(UIView*)view callbacks:(id<ConnectionCallbacks>)callbacks streamAspectRatio:(float)aspectRatio useFramePacing:(BOOL)useFramePacing;
+- (id)initWithView:(UIView*)view callbacks:(id<ConnectionCallbacks>)callbacks streamAspectRatio:(float)aspectRatio useFramePacing:(BOOL)useFramePacing lowLatencyMode:(BOOL)lowLatencyMode;
 
 - (void)setupWithVideoFormat:(int)videoFormat width:(int)videoWidth height:(int)videoHeight frameRate:(int)frameRate;
 - (void)start;

@@ -46,7 +46,7 @@ static void testImmediatePresentation(void) {
             CHECK([decoder isPresentationCurrentForSequence:sequence generation:generation]);
             // Known times verify selection and completed-enqueue ages stay distinct.
             [decoder recordEnqueueAt:decodedAt + 0.006 decodedAt:decodedAt
-                selectedAt:decodedAt + 0.002 displayTarget:decodedAt + 0.016];
+                selectedAt:decodedAt + 0.002];
             enqueues++;
             CFRelease(sample);
         }];
@@ -71,8 +71,6 @@ static void testImmediatePresentation(void) {
         CHECK([stats[@"enqueues"] intValue] == 1 && [stats[@"slotDepth"] intValue] == 0);
         CHECK(fabs([stats[@"enqueueAgeMs"] doubleValue] - 6) < 0.01);
         CHECK(fabs([stats[@"enqueueSelectionAgeMs"] doubleValue] - 2) < 0.01);
-        CHECK(fabs([stats[@"syncSelectionAgeMs"] doubleValue] - 2) < 0.01);
-        CHECK(fabs([stats[@"targetLeadMs"] doubleValue] - 14) < 0.01);
         [scheduler stop];
         [decoder setOutputAvailableHandler:nil];
 
@@ -91,11 +89,11 @@ static void testImmediatePresentation(void) {
             decodedAt:&decodedAt sequence:&sequence generation:&generation];
         CHECK(sample && CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTimeMake(104, 120)) == 0);
         CHECK([decoder isPresentationCurrentForSequence:sequence generation:generation]);
-        [decoder recordEnqueueAt:decodedAt + 0.001 decodedAt:decodedAt selectedAt:decodedAt + 0.0005 displayTarget:0];
+        [decoder recordEnqueueAt:decodedAt + 0.001 decodedAt:decodedAt selectedAt:decodedAt + 0.0005];
         CFRelease(sample);
         stats = [decoder takeStatistics];
         CHECK([stats[@"staleCandidates"] intValue] == 1 && [stats[@"late"] intValue] == 1);
-        CHECK([stats[@"syncEnqueues"] intValue] == 0 && [stats[@"enqueues"] intValue] == 1);
+        CHECK([stats[@"enqueues"] intValue] == 1);
         [decoder stop];
         CHECK(![decoder isPresentationCurrentForSequence:sequence generation:generation]);
         CVPixelBufferRelease(image);

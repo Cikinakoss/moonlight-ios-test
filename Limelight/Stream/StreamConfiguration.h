@@ -30,6 +30,8 @@
 @property int supportedVideoFormats;
 @property BOOL multiController;
 @property BOOL useFramePacing;
+// Snapshot shared by video presentation and physical-gamepad input for this stream.
+@property BOOL lowLatencyMode;
 @property NSData* serverCert;
 
 @end

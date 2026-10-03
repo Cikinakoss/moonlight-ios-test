@@ -12,6 +12,7 @@
 #import "HttpManager.h"
 #import "Connection.h"
 #import "StreamManager.h"
+#import "../Stream/LowLatencySettings.h"
 #import "Utils.h"
 #import "UIComputerView.h"
 #import "UIAppView.h"
@@ -614,6 +615,7 @@ static NSMutableSet* hostList;
     
     // This fork intentionally requests the selected FPS even on a 60 Hz display.
     _streamConfig.frameRate = [streamSettings.framerate intValue];
+    _streamConfig.lowLatencyMode = MLLowLatencyPresetEnabled([NSUserDefaults standardUserDefaults]);
     Log(LOG_I, @"Requested stream frame rate: %d FPS", _streamConfig.frameRate);
     
     _streamConfig.height = [streamSettings.height intValue];

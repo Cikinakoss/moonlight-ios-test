@@ -18,7 +18,6 @@
 @import AudioToolbox;
 
 static const double MOUSE_SPEED_DIVISOR = 1.25;
-NSString* const MLSnappyGamepadInputDefaultsKey = @"SnappyGamepadInputExperimental";
 
 @interface ControllerSupport ()
 -(void) updateFinished:(Controller*)controller eventTimeUs:(uint64_t)eventTimeUs;
@@ -1107,7 +1106,7 @@ NSString* const MLSnappyGamepadInputDefaultsKey = @"SnappyGamepadInputExperiment
     _controllerNumbers = 0;
     _multiController = streamConfig.multiController;
     _swapABXYButtons = streamConfig.swapABXYButtons;
-    _snappyGamepadInput = [[NSUserDefaults standardUserDefaults] boolForKey:MLSnappyGamepadInputDefaultsKey];
+    _snappyGamepadInput = streamConfig.lowLatencyMode;
     _delegate = delegate;
 
     _oscController = [[Controller alloc] init];

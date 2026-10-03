@@ -113,7 +113,7 @@
             // Pair cancellation and connection publication: stop cannot miss the
             // handoff by seeing nil immediately before we create/schedule a connection.
             if (self->_stopRequested || self.isCancelled) { return; }
-            VideoDecoderRenderer* renderer = [[VideoDecoderRenderer alloc] initWithView:self->_renderView callbacks:self->_callbacks streamAspectRatio:(float)self->_config.width / (float)self->_config.height useFramePacing:self->_config.useFramePacing];
+            VideoDecoderRenderer* renderer = [[VideoDecoderRenderer alloc] initWithView:self->_renderView callbacks:self->_callbacks streamAspectRatio:(float)self->_config.width / (float)self->_config.height useFramePacing:self->_config.useFramePacing lowLatencyMode:self->_config.lowLatencyMode];
             self->_connection = [[Connection alloc] initWithConfig:self->_config renderer:renderer connectionCallbacks:self->_callbacks];
             NSOperationQueue* opQueue = [[NSOperationQueue alloc] init];
             [opQueue addOperation:self->_connection];

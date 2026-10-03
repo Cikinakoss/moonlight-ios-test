@@ -8,7 +8,6 @@
 
 #import "Connection.h"
 #import "Utils.h"
-#import "ControllerSupport.h"
 
 #import <VideoToolbox/VideoToolbox.h>
 
@@ -30,6 +29,7 @@
     char _rtspSessionUrl[128];
     VideoDecoderRenderer* _renderer;
     id<ConnectionCallbacks> _connectionCallbacks;
+    BOOL _lowLatencyMode;
     BOOL _terminationRequested; // Protected by connectionStateLock.
 }
 
@@ -462,6 +462,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     _streamConfig.width = config.width;
     _streamConfig.height = config.height;
     _streamConfig.fps = config.frameRate;
+    _lowLatencyMode = config.lowLatencyMode;
     _streamConfig.bitrate = config.bitRate;
     _streamConfig.supportedVideoFormats = config.supportedVideoFormats;
     _streamConfig.audioConfiguration = config.audioConfiguration;
@@ -537,7 +538,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
         }
         [connectionStateLock unlock];
         if (!cancelled) {
-            LiSetSnappyGamepadInput([[NSUserDefaults standardUserDefaults] boolForKey:MLSnappyGamepadInputDefaultsKey]);
+            LiSetSnappyGamepadInput(_lowLatencyMode);
             LiStartConnection(&_serverInfo,
                               &_streamConfig,
                               &_clCallbacks,

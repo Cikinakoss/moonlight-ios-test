@@ -15,7 +15,7 @@
 // Recheck freshness after sample wrapping, immediately before Immediate enqueue.
 - (BOOL)isPresentationCurrentForSequence:(uint64_t)sequence generation:(uint64_t)generation;
 - (void)recordEnqueueAt:(CFTimeInterval)time decodedAt:(CFTimeInterval)decodedAt
-    selectedAt:(CFTimeInterval)selectedAt displayTarget:(CFTimeInterval)displayTarget;
+    selectedAt:(CFTimeInterval)selectedAt;
 - (NSDictionary*)takeStatistics;
 - (NSString*)fatalError;
 // Off the main thread, after the compressed-video consumer has joined.

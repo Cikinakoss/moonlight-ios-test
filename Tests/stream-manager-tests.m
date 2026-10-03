@@ -9,7 +9,8 @@
 
 #define CHECK(x) do { if (!(x)) { NSLog(@"CHECK failed at %d: %s", __LINE__, #x); abort(); } } while (0)
 #define Log(...) do {} while (0)
-static BOOL busy;
+static BOOL busy, rendererLowLatency, connectionLowLatency;
+static int connectionFrameRate;
 static int created, terminated, failures, requests;
 static void (^duringRequest)(NSString*);
 
@@ -19,14 +20,14 @@ static void (^duringRequest)(NSString*);
 - (void)launchFailed:(NSString*)message;
 @end
 @interface VideoDecoderRenderer : NSObject
-- (id)initWithView:(UIView*)view callbacks:(id<ConnectionCallbacks>)callbacks streamAspectRatio:(float)ratio useFramePacing:(BOOL)pacing;
+- (id)initWithView:(UIView*)view callbacks:(id<ConnectionCallbacks>)callbacks streamAspectRatio:(float)ratio useFramePacing:(BOOL)pacing lowLatencyMode:(BOOL)lowLatencyMode;
 @end
 @implementation VideoDecoderRenderer
-- (id)initWithView:(UIView*)view callbacks:(id<ConnectionCallbacks>)callbacks streamAspectRatio:(float)ratio useFramePacing:(BOOL)pacing { return [super init]; }
+- (id)initWithView:(UIView*)view callbacks:(id<ConnectionCallbacks>)callbacks streamAspectRatio:(float)ratio useFramePacing:(BOOL)pacing lowLatencyMode:(BOOL)lowLatencyMode { rendererLowLatency = lowLatencyMode; return [super init]; }
 @end
 #include "connection-under-test.inc"
 @implementation Connection
-- (id)initWithConfig:(StreamConfiguration*)config renderer:(VideoDecoderRenderer*)renderer connectionCallbacks:(id<ConnectionCallbacks>)callbacks { self = [super init]; created++; return self; }
+- (id)initWithConfig:(StreamConfiguration*)config renderer:(VideoDecoderRenderer*)renderer connectionCallbacks:(id<ConnectionCallbacks>)callbacks { self = [super init]; created++; connectionLowLatency = config.lowLatencyMode; connectionFrameRate = config.frameRate; return self; }
 - (void)terminate { [self cancel]; terminated++; }
 - (void)main {}
 - (BOOL)getVideoStats:(video_stats_t*)stats { return NO; }
@@ -131,9 +132,19 @@ int main(void) {
         [stream stopStream]; drainMainQueue();
         CHECK(created == 0);
         stream = manager(); [stream main]; drainMainQueue();
-        CHECK(created == 1);
+        CHECK(created == 1 && !rendererLowLatency && !connectionLowLatency);
         [stream stopStream];
         CHECK(terminated == 1);
+        // The shared preset reaches both consumers without changing selected FPS.
+        StreamConfiguration* config = [StreamConfiguration new];
+        config.width = config.height = 16;
+        config.frameRate = 60;
+        config.lowLatencyMode = YES;
+        stream = [[StreamManager alloc] initWithConfig:config renderView:[UIView new] connectionCallbacks:[TestCallbacks new]];
+        [stream main]; drainMainQueue();
+        CHECK(created == 2 && rendererLowLatency && connectionLowLatency);
+        CHECK(connectionFrameRate == 60);
+        [stream stopStream]; CHECK(terminated == 2);
         NSLog(@"PASS: cancellation before HTTP, during serverinfo/launch/resume, queued main handoff, and published connection termination");
     }
     return 0;

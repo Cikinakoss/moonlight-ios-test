@@ -10,6 +10,13 @@ Check out [the Moonlight wiki](https://github.com/moonlight-stream/moonlight-doc
 
 [![Moonlight for iOS and tvOS](https://moonlight-stream.org/images/App_Store_Badge_135x40.svg)](https://apps.apple.com/us/app/moonlight-game-streaming/id1000551566)
 
+## Fork: Low Latency preset
+
+This fork combines its tested video and gamepad experiments into one **Low Latency
+(Experimental)** switch. Frame rate remains a separate setting, including 120 FPS
+on a 60 Hz display. See [the preset guide](docs/low-latency.md) for behavior,
+migration, builds, and device validation.
+
 ## Building
 * Install Xcode from the [App Store page](https://apps.apple.com/us/app/xcode/id497799835)
 * Run `git clone --recursive https://github.com/moonlight-stream/moonlight-ios.git`

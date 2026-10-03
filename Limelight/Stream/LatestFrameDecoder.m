@@ -57,8 +57,8 @@
     double _decodeTimeTotal, _ageTotal;
     OSType _outputPixelFormat;
     dispatch_block_t _outputAvailableHandler;
-    uint64_t _enqueues, _syncEnqueues, _staleCandidates;
-    double _enqueueAgeTotal, _enqueueSelectionAgeTotal, _syncAgeTotal, _targetLeadTotal;
+    uint64_t _enqueues, _staleCandidates;
+    double _enqueueAgeTotal, _enqueueSelectionAgeTotal;
 }
 
 - (id)init {
@@ -414,16 +414,11 @@
 }
 
 - (void)recordEnqueueAt:(CFTimeInterval)time decodedAt:(CFTimeInterval)decodedAt
-    selectedAt:(CFTimeInterval)selectedAt displayTarget:(CFTimeInterval)displayTarget {
+    selectedAt:(CFTimeInterval)selectedAt {
     [_slotLock lock];
     _enqueues++;
     _enqueueAgeTotal += MAX(0, time - decodedAt);
     _enqueueSelectionAgeTotal += MAX(0, selectedAt - decodedAt);
-    if (displayTarget > 0) {
-        _syncEnqueues++;
-        _syncAgeTotal += MAX(0, selectedAt - decodedAt);
-        _targetLeadTotal += displayTarget - selectedAt; // Negative means selection was late.
-    }
     [_slotLock unlock];
 }
 
@@ -437,17 +432,15 @@
         @"inFlight": @(_inFlight), @"pixelFormat": @(_outputPixelFormat),
         @"decodeMs": @(_decoded ? 1000 * _decodeTimeTotal / _decoded : 0),
         @"ageMs": @(_presented ? 1000 * _ageTotal / _presented : 0),
-        @"enqueues": @(_enqueues), @"staleCandidates": @(_staleCandidates), @"syncEnqueues": @(_syncEnqueues),
+        @"enqueues": @(_enqueues), @"staleCandidates": @(_staleCandidates),
         @"enqueueAgeMs": @(_enqueues ? 1000 * _enqueueAgeTotal / _enqueues : 0),
-        @"enqueueSelectionAgeMs": @(_enqueues ? 1000 * _enqueueSelectionAgeTotal / _enqueues : 0),
-        @"syncSelectionAgeMs": @(_syncEnqueues ? 1000 * _syncAgeTotal / _syncEnqueues : 0),
-        @"targetLeadMs": @(_syncEnqueues ? 1000 * _targetLeadTotal / _syncEnqueues : 0)
+        @"enqueueSelectionAgeMs": @(_enqueues ? 1000 * _enqueueSelectionAgeTotal / _enqueues : 0)
     };
     _submitted = _decoded = _overwritten = _presented = _late = _vtDropped = 0;
     _asyncOutputs = _errors = _resets = _presentationErrors = 0;
     _decodeTimeTotal = _ageTotal = 0;
-    _enqueues = _syncEnqueues = _staleCandidates = 0;
-    _enqueueAgeTotal = _enqueueSelectionAgeTotal = _syncAgeTotal = _targetLeadTotal = 0;
+    _enqueues = _staleCandidates = 0;
+    _enqueueAgeTotal = _enqueueSelectionAgeTotal = 0;
     [_slotLock unlock];
     return stats;
 }

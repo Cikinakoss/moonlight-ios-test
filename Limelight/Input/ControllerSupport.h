@@ -11,8 +11,6 @@
 
 @class OnScreenControls;
 
-FOUNDATION_EXPORT NSString* const MLSnappyGamepadInputDefaultsKey;
-
 @protocol ControllerSupportDelegate <NSObject>
 
 - (void) gamepadPresenceChanged;
