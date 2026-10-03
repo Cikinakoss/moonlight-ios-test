@@ -8,6 +8,7 @@
 
 #import "Connection.h"
 #import "Utils.h"
+#import "ControllerSupport.h"
 
 #import <VideoToolbox/VideoToolbox.h>
 
@@ -536,6 +537,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
         }
         [connectionStateLock unlock];
         if (!cancelled) {
+            LiSetSnappyGamepadInput([[NSUserDefaults standardUserDefaults] boolForKey:MLSnappyGamepadInputDefaultsKey]);
             LiStartConnection(&_serverInfo,
                               &_streamConfig,
                               &_clCallbacks,

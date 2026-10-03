@@ -18,6 +18,11 @@
 @import AudioToolbox;
 
 static const double MOUSE_SPEED_DIVISOR = 1.25;
+NSString* const MLSnappyGamepadInputDefaultsKey = @"SnappyGamepadInputExperimental";
+
+@interface ControllerSupport ()
+-(void) updateFinished:(Controller*)controller eventTimeUs:(uint64_t)eventTimeUs;
+@end
 
 @implementation ControllerSupport {
     id _controllerConnectObserver;
@@ -46,6 +51,8 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
     char _controllerNumbers;
     bool _multiController;
     bool _swapABXYButtons;
+    BOOL _snappyGamepadInput;
+    BOOL _cleanedUp; // Protected by _controllerStreamLock.
 }
 
 // UPDATE_BUTTON_FLAG(controller, flag, pressed)
@@ -323,9 +330,18 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
 
 -(void) updateFinished:(Controller*)controller
 {
+    [self updateFinished:controller eventTimeUs:0];
+}
+
+-(void) updateFinished:(Controller*)controller eventTimeUs:(uint64_t)eventTimeUs
+{
     BOOL exitRequested = NO;
     
     [_controllerStreamLock lock];
+    if (_cleanedUp || controller == nil) {
+        [_controllerStreamLock unlock];
+        return;
+    }
     @synchronized(controller) {
         // Handle Start+Select+L1+R1 gamepad quit combo
         if (controller.lastButtonFlags == (PLAY_FLAG | BACK_FLAG | LB_FLAG | RB_FLAG)) {
@@ -355,9 +371,16 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
             }
             
             // Player 1 is always present for OSC
-            LiSendMultiControllerEvent(_multiController ? controller.playerIndex : 0, [self getActiveGamepadMask],
-                                       buttonFlags, leftTrigger, rightTrigger,
-                                       leftStickX, leftStickY, rightStickX, rightStickY);
+            if (controller.gamepad != nil) {
+                LiSendPhysicalGamepadEvent(_multiController ? controller.playerIndex : 0, [self getActiveGamepadMask],
+                                          buttonFlags, leftTrigger, rightTrigger,
+                                          leftStickX, leftStickY, rightStickX, rightStickY, eventTimeUs);
+            }
+            else {
+                LiSendMultiControllerEvent(_multiController ? controller.playerIndex : 0, [self getActiveGamepadMask],
+                                           buttonFlags, leftTrigger, rightTrigger,
+                                           leftStickX, leftStickY, rightStickX, rightStickY);
+            }
         }
     }
     [_controllerStreamLock unlock];
@@ -721,7 +744,9 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
             }
             
             controller.extendedGamepad.valueChangedHandler = ^(GCExtendedGamepad *gamepad, GCControllerElement *element) {
+                uint64_t eventTimeUs = LiRecordGamepadCallback();
                 Controller* limeController = [self->_controllers objectForKey:[NSNumber numberWithInteger:gamepad.controller.playerIndex]];
+                if (limeController == nil) return;
                 short leftStickX, leftStickY;
                 short rightStickX, rightStickY;
                 unsigned char leftTrigger, rightTrigger;
@@ -821,7 +846,7 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
                 [self updateLeftStick:limeController x:leftStickX y:leftStickY];
                 [self updateRightStick:limeController x:rightStickX y:rightStickY];
                 [self updateTriggers:limeController left:leftTrigger right:rightTrigger];
-                [self updateFinished:limeController];
+                [self updateFinished:limeController eventTimeUs:eventTimeUs];
             };
         }
     } else {
@@ -1082,6 +1107,7 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
     _controllerNumbers = 0;
     _multiController = streamConfig.multiController;
     _swapABXYButtons = streamConfig.swapABXYButtons;
+    _snappyGamepadInput = [[NSUserDefaults standardUserDefaults] boolForKey:MLSnappyGamepadInputDefaultsKey];
     _delegate = delegate;
 
     _oscController = [[Controller alloc] init];
@@ -1166,6 +1192,14 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
             }
             
             // Inform the server of the updated active gamepads before removing this controller
+            if (self->_snappyGamepadInput) {
+                @synchronized(limeController) {
+                    limeController.lastButtonFlags = limeController.emulatingButtonFlags = 0;
+                    limeController.lastLeftTrigger = limeController.lastRightTrigger = 0;
+                    limeController.lastLeftStickX = limeController.lastLeftStickY = 0;
+                    limeController.lastRightStickX = limeController.lastRightStickY = 0;
+                }
+            }
             [self updateFinished:limeController];
             [self->_controllers removeObjectForKey:[NSNumber numberWithInteger:controller.playerIndex]];
             
@@ -1233,6 +1267,9 @@ static const double MOUSE_SPEED_DIVISOR = 1.25;
 
 -(void) cleanup
 {
+    [_controllerStreamLock lock];
+    _cleanedUp = YES;
+    [_controllerStreamLock unlock];
     [[NSNotificationCenter defaultCenter] removeObserver:_controllerConnectObserver];
     [[NSNotificationCenter defaultCenter] removeObserver:_controllerDisconnectObserver];
     [[NSNotificationCenter defaultCenter] removeObserver:_mouseConnectObserver];

@@ -57,6 +57,16 @@ jobs:
             -o "$RUNNER_TEMP/latest-frame-tests"
           "$RUNNER_TEMP/latest-frame-tests"
 
+      - name: Test gamepad queue, edges, and teardown
+        run: |
+          common=moonlight-common/moonlight-common-c
+          xcrun --sdk macosx clang -std=gnu11 -g -O1 \
+            -Wall -Wextra -Wno-unused-parameter -Werror -DLC_DEBUG \
+            -fsanitize=address,undefined -pthread -I "$common/src" -I "$common/enet/include" \
+            "$common/tests/gamepad-input-tests.c" "$common/src/Platform.c" \
+            "$common/src/LinkedBlockingQueue.c" -o "$RUNNER_TEMP/gamepad-tests"
+          "$RUNNER_TEMP/gamepad-tests"
+
       - name: Package unsigned IPA
         run: |
           app="$RUNNER_TEMP/MoonlightBuild/Build/Products/Release-iphoneos/Moonlight.app"

@@ -9,6 +9,7 @@
 #import "SettingsViewController.h"
 #import "TemporarySettings.h"
 #import "DataManager.h"
+#import "ControllerSupport.h"
 #import "VideoDecoderRenderer.h"
 
 #import <VideoToolbox/VideoToolbox.h>
@@ -21,6 +22,7 @@
     UISegmentedControl* _immediatePresentationSelector;
     UISegmentedControl* _latestDecodedFrameSelector;
     UISegmentedControl* _presentationTriggerSelector;
+    UISegmentedControl* _snappyGamepadInputSelector;
 }
 
 @dynamic overrideUserInterfaceStyle;
@@ -333,6 +335,27 @@ BOOL isCustomResolution(CGSize res) {
     [self.scrollView addSubview:_presentationTriggerSelector];
     [_latestDecodedFrameSelector addTarget:self action:@selector(latestDecodedFrameChanged) forControlEvents:UIControlEventValueChanged];
     [self latestDecodedFrameChanged];
+
+    UILabel* gamepadLabel = [[UILabel alloc] initWithFrame:CGRectMake(referenceFrame.origin.x,
+        CGRectGetMaxY(_presentationTriggerSelector.frame) + 12, referenceFrame.size.width, 24)];
+    gamepadLabel.text = @"Snappy Gamepad Input (Experimental)";
+    gamepadLabel.textColor = UIColor.whiteColor;
+    gamepadLabel.font = [UIFont systemFontOfSize:17];
+    gamepadLabel.adjustsFontSizeToFitWidth = YES;
+    [self.scrollView addSubview:gamepadLabel];
+    _snappyGamepadInputSelector = [[UISegmentedControl alloc] initWithItems:@[@"Off", @"On"]];
+    _snappyGamepadInputSelector.frame = CGRectMake(referenceFrame.origin.x,
+        CGRectGetMaxY(gamepadLabel.frame) + 5, referenceFrame.size.width, referenceFrame.size.height);
+    _snappyGamepadInputSelector.selectedSegmentIndex =
+        [[NSUserDefaults standardUserDefaults] boolForKey:MLSnappyGamepadInputDefaultsKey] ? 1 : 0;
+    [self.scrollView addSubview:_snappyGamepadInputSelector];
+    UILabel* gamepadDescription = [[UILabel alloc] initWithFrame:CGRectMake(referenceFrame.origin.x,
+        CGRectGetMaxY(_snappyGamepadInputSelector.frame) + 5, referenceFrame.size.width, 64)];
+    gamepadDescription.text = @"Reduces gamepad input queueing and sends fresh controller state more aggressively. Reconnect after changing.";
+    gamepadDescription.textColor = UIColor.whiteColor;
+    gamepadDescription.font = [UIFont systemFontOfSize:13];
+    gamepadDescription.numberOfLines = 0;
+    [self.scrollView addSubview:gamepadDescription];
 }
 
 - (void)latestDecodedFrameChanged {
@@ -597,6 +620,8 @@ BOOL isCustomResolution(CGSize res) {
 }
 
 - (void) saveSettings {
+    [[NSUserDefaults standardUserDefaults] setBool:_snappyGamepadInputSelector.selectedSegmentIndex == 1
+                                          forKey:MLSnappyGamepadInputDefaultsKey];
     [[NSUserDefaults standardUserDefaults] setBool:_asyncVideoSubmissionSelector.selectedSegmentIndex == 1
                                           forKey:MLAsyncVideoSubmissionDefaultsKey];
     [[NSUserDefaults standardUserDefaults] setBool:_immediatePresentationSelector.selectedSegmentIndex == 1
