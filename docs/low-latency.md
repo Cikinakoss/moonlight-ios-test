@@ -54,6 +54,12 @@ visibility stay on the main thread. Shutdown closes admission, joins compressed
 submission, drains presentation and decoder callbacks, and releases pending image
 ownership before core queues are destroyed.
 
+Terminal asynchronous decoder errors also wake the presentation coalescer, even
+without another compressed input or a ready display renderer. Submission and
+presentation share an atomic once-only failure report; the existing connection
+termination path stops the stream. Late errors from an older decoder generation
+cannot escalate the current session's failure state.
+
 Physical gamepads retain the Snappy policy: coalesce fresh analog state, preserve
 button edges, request prompt transport servicing, and reject late physical
 callbacks during teardown. On-screen controls retain their normal classification.
@@ -83,7 +89,8 @@ frames for the separately selected stream rate.
 The unsigned IPA workflow builds iOS Release and runs sanitizer checks for:
 
 - Production decoded-image ownership, freshness ordering, metadata, coalescing,
-  readiness-only recovery, cancellation, and restart.
+  readiness-only recovery, cancellation, restart, concurrent late requests during
+  an active presentation shutdown, and terminal error reporting without new input.
 - Production gamepad queueing, button edges, mixed input sources, and teardown.
 - Preference migration, explicit Off, save/obsolete-key cleanup.
 - Startup cancellation before/during HTTP and during main-thread handoff, plus

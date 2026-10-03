@@ -52,7 +52,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     BOOL _immediateLayerShown; // Owned by the serial presentation queue.
     double _displayIntervalTotal;
     NSUInteger _displayIntervalSamples;
-    BOOL _reportedLatestFailure;
+    atomic_bool _reportedLatestFailure;
     AVSampleBufferVideoRenderer* _sampleBufferRenderer;
     dispatch_queue_t _videoSubmitQueue;
     dispatch_group_t _videoSubmitGroup;
@@ -138,6 +138,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     }
     _decoderLock = [[NSLock alloc] init];
     atomic_init(&_stopping, true);
+    atomic_init(&_reportedLatestFailure, false);
     atomic_init(&_submittedFrames, 0);
     atomic_init(&_enqueuedFrames, 0);
     atomic_init(&_backpressureDrops, 0);
@@ -198,7 +199,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         _immediateLayerShown = NO;
         [_latestPresentationScheduler start];
         __weak VideoDecoderRenderer* weakSelf = self;
-        [_latestDecoder setOutputAvailableHandler:^{
+        [_latestDecoder setPresentationWakeHandler:^{
             VideoDecoderRenderer* renderer = weakSelf;
             if (renderer && !atomic_load(&renderer->_stopping)) {
                 [renderer->_latestPresentationScheduler requestPresentation];
@@ -374,10 +375,28 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
     }];
 }
 
+- (BOOL)reportLatestDecoderFailureIfNeeded
+{
+    NSString* fatal = [_latestDecoder fatalError];
+    if (!fatal) { return NO; }
+    // Submission and presentation may observe the same async failure concurrently.
+    if (!atomic_load(&_stopping) && !atomic_exchange(&_reportedLatestFailure, true)) {
+        Log(LOG_E, @"%@", fatal);
+        // Existing failure handling stops the connection off these worker queues.
+        [_callbacks connectionTerminated:-1];
+    }
+    return YES;
+}
+
 - (void)presentLatestDecodedFrameImmediately
 {
     // Sole consumer on the dedicated serial queue. No layer access on VT threads.
     if (atomic_load(&_stopping)) {
+        return;
+    }
+    // Check before readiness: even a blocked renderer must report terminal decode failure.
+    if ([self reportLatestDecoderFailureIfNeeded]) {
+        [_latestReadinessRetry cancel];
         return;
     }
     if (@available(iOS 17.0, tvOS 17.0, *)) {
@@ -905,13 +924,7 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         CFRelease(dataBlockBuffer);
         CFRelease(frameBlockBuffer);
         CFRelease(sampleBuffer);
-        NSString* fatal = [_latestDecoder fatalError];
-        if (fatal && !_reportedLatestFailure) {
-            _reportedLatestFailure = YES;
-            Log(LOG_E, @"%@", fatal);
-            // Existing connection failure callback stops the stream off this worker.
-            [_callbacks connectionTerminated:-1];
-        }
+        [self reportLatestDecoderFailureIfNeeded];
         return result;
     }
 

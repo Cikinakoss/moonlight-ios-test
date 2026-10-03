@@ -56,7 +56,7 @@
     NSUInteger _inFlight;
     double _decodeTimeTotal, _ageTotal;
     OSType _outputPixelFormat;
-    dispatch_block_t _outputAvailableHandler;
+    dispatch_block_t _presentationWakeHandler;
     uint64_t _enqueues, _staleCandidates;
     double _enqueueAgeTotal, _enqueueSelectionAgeTotal;
 }
@@ -115,12 +115,12 @@
 
 - (void)stop {
     [self closeSession];
-    [self setOutputAvailableHandler:nil];
+    [self setPresentationWakeHandler:nil];
 }
 
-- (void)setOutputAvailableHandler:(dispatch_block_t)handler {
+- (void)setPresentationWakeHandler:(dispatch_block_t)handler {
     [_slotLock lock];
-    _outputAvailableHandler = [handler copy];
+    _presentationWakeHandler = [handler copy];
     [_slotLock unlock];
 }
 
@@ -161,6 +161,15 @@
     return result;
 }
 
+// Called by the serial submitter only after creating the new VT session.
+- (void)acceptOutputsAfterSessionCreation {
+    [_slotLock lock];
+    _acceptingOutputs = YES;
+    _needsReset = NO;
+    _resets++;
+    [_slotLock unlock];
+}
+
 - (OSStatus)createSessionForFormat:(CMVideoFormatDescriptionRef)format videoFormat:(int)videoFormat {
     NSDictionary* extensions = (__bridge NSDictionary*)CMFormatDescriptionGetExtensions(format);
     BOOL fullRange = [extensions[(__bridge NSString*)kCMFormatDescriptionExtension_FullRangeVideo] boolValue];
@@ -194,11 +203,7 @@
     _sessionFormat = (CMVideoFormatDescriptionRef)CFRetain(format);
     OSStatus realtime = VTSessionSetProperty(_session, kVTDecompressionPropertyKey_RealTime, kCFBooleanTrue);
     NSLog(@"Latest decoder created: pixel format=%08x; RealTime status=%d", (unsigned)pixelFormat, (int)realtime);
-    [_slotLock lock];
-    _acceptingOutputs = YES;
-    _needsReset = NO;
-    _resets++;
-    [_slotLock unlock];
+    [self acceptOutputsAfterSessionCreation];
     return noErr;
 }
 
@@ -222,7 +227,10 @@
             _needsReset = YES;
             requestIDR = YES;
             if (++_consecutiveDecodeErrors >= 3) {
-                _fatalError = @"VideoToolbox repeatedly failed to decode. Disable Latest Decoded Frame to compare the previous renderer.";
+                _fatalError = @"VideoToolbox repeatedly failed to decode. Turn off Low Latency to compare the standard renderer.";
+                // Async completion can follow the last compressed submission.
+                // Wake presentation so failure reporting does not wait for new input.
+                notify = _presentationWakeHandler;
             }
         }
     }
@@ -254,7 +262,7 @@
             _pendingSequence = _newestSequence = sequence;
             _pendingReadyAt = now;
             _pendingMetadata = metadata;
-            notify = _outputAvailableHandler;
+            notify = _presentationWakeHandler;
         }
         else {
             _late++;
@@ -292,7 +300,7 @@
             [_slotLock lock];
             _errors++;
             if (++_creationFailures >= 3) {
-                _fatalError = [NSString stringWithFormat:@"VideoToolbox cannot create the latest-frame hardware decoder (%d). Disable Latest Decoded Frame to use the previous renderer.", (int)creation];
+                _fatalError = [NSString stringWithFormat:@"VideoToolbox cannot create the latest-frame hardware decoder (%d). Turn off Low Latency to use the standard renderer.", (int)creation];
             }
             [_slotLock unlock];
             return DR_NEED_IDR;

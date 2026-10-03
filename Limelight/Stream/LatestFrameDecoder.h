@@ -10,8 +10,9 @@
 - (CMSampleBufferRef)copyPresentationSampleAtTime:(CFTimeInterval)time CF_RETURNS_RETAINED;
 - (CMSampleBufferRef)copyPresentationSampleAtTime:(CFTimeInterval)time decodedAt:(CFTimeInterval*)decodedAt
     sequence:(uint64_t*)sequence generation:(uint64_t*)generation CF_RETURNS_RETAINED;
-// The callback only signals a coalescer; it must not wait or do display work.
-- (void)setOutputAvailableHandler:(dispatch_block_t)handler;
+// Signals newer output or a terminal decoder error, including without more input.
+// The callback only wakes a coalescer; it must not wait or do display work.
+- (void)setPresentationWakeHandler:(dispatch_block_t)handler;
 // Recheck freshness after sample wrapping, immediately before Immediate enqueue.
 - (BOOL)isPresentationCurrentForSequence:(uint64_t)sequence generation:(uint64_t)generation;
 - (void)recordEnqueueAt:(CFTimeInterval)time decodedAt:(CFTimeInterval)decodedAt

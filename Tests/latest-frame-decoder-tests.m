@@ -51,7 +51,7 @@ static void testImmediatePresentation(void) {
             CFRelease(sample);
         }];
         [scheduler start];
-        [decoder setOutputAvailableHandler:^{ [scheduler requestPresentation]; }];
+        [decoder setPresentationWakeHandler:^{ [scheduler requestPresentation]; }];
         CVPixelBufferRef image = createImage();
         output(decoder, image, 100, 1);
         output(decoder, image, 102, 2);
@@ -72,7 +72,7 @@ static void testImmediatePresentation(void) {
         CHECK(fabs([stats[@"enqueueAgeMs"] doubleValue] - 6) < 0.01);
         CHECK(fabs([stats[@"enqueueSelectionAgeMs"] doubleValue] - 2) < 0.01);
         [scheduler stop];
-        [decoder setOutputAvailableHandler:nil];
+        [decoder setPresentationWakeHandler:nil];
 
         // A newer output during wrapping makes the selected Immediate candidate stale.
         output(decoder, image, 103, 4);
@@ -97,6 +97,86 @@ static void testImmediatePresentation(void) {
         [decoder stop];
         CHECK(![decoder isPresentationCurrentForSequence:sequence generation:generation]);
         CVPixelBufferRelease(image);
+    }
+}
+
+static void testTerminalDecoderErrorWake(void) {
+    @autoreleasepool {
+        LatestFrameDecoder* decoder = [[LatestFrameDecoder alloc] init];
+        dispatch_queue_t queue = dispatch_queue_create("test.terminal-error", DISPATCH_QUEUE_SERIAL);
+        __block int failures = 0;
+        LatestFramePresentationScheduler* scheduler = [[LatestFramePresentationScheduler alloc] initWithQueue:queue handler:^{
+            CHECK([decoder fatalError] != nil);
+            CHECK([decoder copyPresentationSampleAtTime:CACurrentMediaTime()] == NULL);
+            failures++;
+        }];
+        [scheduler start];
+        [decoder setPresentationWakeHandler:^{ [scheduler requestPresentation]; }];
+        unsigned int initialIDRs = idrRequests;
+        for (uint64_t generation = 1; generation <= 3; generation++) {
+            if (generation > 1) {
+                // Exercise actual generation/slot reset and output admission without
+                // requiring a hardware codec in the synthetic callback harness.
+                [decoder closeSession];
+                [decoder acceptOutputsAfterSessionCreation];
+                [decoder receiveImage:NULL pts:kCMTimeInvalid sequence:99 generation:generation - 1 metadata:nil
+                    submittedAt:CACurrentMediaTime() status:-1 flags:0];
+                CHECK(idrRequests == initialIDRs + generation - 1); // Old errors cannot escalate.
+            }
+            [decoder receiveImage:NULL pts:kCMTimeInvalid sequence:generation generation:generation metadata:nil
+                submittedAt:CACurrentMediaTime() status:-1 flags:0];
+            dispatch_sync(queue, ^{});
+            CHECK(failures == (generation == 3 ? 1 : 0));
+        }
+        CHECK(idrRequests == initialIDRs + 3);
+        CHECK([[decoder fatalError] containsString:@"Low Latency"]);
+        // No new compressed input or decoded image was needed to wake the worker.
+        [decoder receiveImage:NULL pts:kCMTimeInvalid sequence:4 generation:3 metadata:nil
+            submittedAt:CACurrentMediaTime() status:-1 flags:0];
+        dispatch_sync(queue, ^{});
+        CHECK(failures == 1 && idrRequests == initialIDRs + 3);
+        [scheduler stop];
+        [decoder stop];
+        [decoder receiveImage:NULL pts:kCMTimeInvalid sequence:5 generation:4 metadata:nil
+            submittedAt:CACurrentMediaTime() status:-1 flags:0];
+        CHECK(idrRequests == initialIDRs + 3);
+        CHECK([[scheduler takeStatistics][@"requests"] intValue] == 1);
+    }
+}
+
+static void testConcurrentPresentationShutdown(void) {
+    @autoreleasepool {
+        dispatch_queue_t queue = dispatch_queue_create("test.active-shutdown", DISPATCH_QUEUE_SERIAL);
+        dispatch_semaphore_t entered = dispatch_semaphore_create(0);
+        dispatch_semaphore_t release = dispatch_semaphore_create(0);
+        dispatch_semaphore_t cancelled = dispatch_semaphore_create(0);
+        dispatch_semaphore_t stopped = dispatch_semaphore_create(0);
+        __block int passes = 0;
+        LatestFramePresentationScheduler* scheduler = [[LatestFramePresentationScheduler alloc] initWithQueue:queue handler:^{
+            passes++;
+            dispatch_semaphore_signal(entered);
+            dispatch_semaphore_wait(release, DISPATCH_TIME_FOREVER);
+        }];
+        [scheduler start];
+        [scheduler requestPresentation];
+        CHECK(dispatch_semaphore_wait(entered, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{
+            [scheduler cancel];
+            dispatch_semaphore_signal(cancelled);
+            [scheduler stop]; // Must wait for the active presentation handler.
+            dispatch_semaphore_signal(stopped);
+        });
+        CHECK(dispatch_semaphore_wait(cancelled, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0);
+        dispatch_apply(1000, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^(size_t i) {
+            [scheduler requestPresentation]; // Concurrent late output/readiness requests.
+        });
+        CHECK(dispatch_semaphore_wait(stopped, DISPATCH_TIME_NOW) != 0);
+        NSDictionary* stats = [scheduler takeStatistics];
+        CHECK([stats[@"requests"] intValue] == 1 && [stats[@"outstanding"] intValue] == 1);
+        dispatch_semaphore_signal(release);
+        CHECK(dispatch_semaphore_wait(stopped, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0);
+        CHECK(passes == 1 && [[scheduler takeStatistics][@"outstanding"] intValue] == 0);
+        [scheduler stop]; // Repeated cleanup remains safe after the concurrent stop.
     }
 }
 
@@ -326,8 +406,10 @@ int main(void) {
         CHECK(idrRequests == 1);
         testImmediatePresentation();
         testPresentationSchedulerLifecycle();
+        testConcurrentPresentationShutdown();
         testReadinessRetry();
-        NSLog(@"Latest-frame tests passed: mailbox ownership/ordering, coalesced presentation, stale candidates, distinct ages, concurrency, cancellation, restart and recovery.");
+        testTerminalDecoderErrorWake();
+        NSLog(@"Latest-frame tests passed: ownership/ordering, coalesced presentation, stale candidates, ages, concurrent shutdown, restart, readiness recovery, and terminal error wake.");
     }
     return 0;
 }
